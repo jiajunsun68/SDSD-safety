@@ -1,6 +1,6 @@
 # SDSD-Safety — 项目进度
 
-最后更新：2026-10-30 00:45 (Asia/Shanghai)
+最后更新：2026-10-30 00:50 (Asia/Shanghai)
 
 ## 项目概况
 
@@ -77,7 +77,7 @@
 | T09 | 消融：外部拒绝示范 K=1 | seed=42, 100 步 | succeeded | T08b | GPU4 | ASR 5.25；XSTest 语义 17.6/94.0；GSM8K 87.5 | `logs/sdsd_external_refusal_100.log` |
 | T10 | 消融：自采拒绝示范 K=3 | seed=42, 100 步 | succeeded | T08b | GPU1 | ASR 12.0；XSTest 语义 25.6/98.5；GSM8K 90.0 | `logs/sdsd_k3_refusal_100.log` |
 | T11 | 主表评估与官方 HarmBench 判定 | — | succeeded | T04–T10 | GPU0/1/4 | 全部 run 的 ASR/XSTest/GSM8K 已汇总 | `results/summary.csv` |
-| T12 | 汇总、README、Git push | — | running | T11 | — | 本文件与结果表已更新，待 commit/push | — |
+| T12 | 汇总、README、Git push | — | succeeded | T11 | — | 已 push `origin/main` commit `ead8b1f` | — |
 | T13 | HarmBench ASR@16 | Base/SFT | cancelled | T05b | GPU1 | 共享 GPU 下生成过慢，停止 | `logs/harmbench16_100x16.log` |
 | T14 | SDSD 冻结教师兜底 | seed=42 | cancelled | T08 | GPU1 | EMA 修复版越过崩溃点，停止释放 GPU | `logs/sdsd_frozen_refusal_seed42.log` |
 
@@ -107,5 +107,5 @@
 
 ## 最近同步
 
-- 上一次确认 push：2026-10-29 18:10 CST，`origin/main` commit `50e784d`。
-- 本轮代码/结果/文档定稿后提交并核验远端 commit；如推送失败会在本节注明缺失权限。
+- 2026-10-30 00:50 CST：已 push 到 `origin/main`，commit `ead8b1f`（`git ls-remote origin main` 核验一致）。含主表、消融、机制分析、README/NOTICE 与最终 status。
+- 上一次：2026-10-29 18:10 CST，commit `50e784d`。
