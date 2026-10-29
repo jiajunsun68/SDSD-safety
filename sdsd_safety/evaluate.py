@@ -23,6 +23,7 @@ import pandas as pd
 import torch
 from peft import PeftModel
 
+from .judging import Qwen3GuardJudge
 from .metrics import gsm8k_correct, is_refusal, parse_harmbench_label
 from .modeling import generate_rollouts, load_base_model, load_tokenizer
 from .utils import load_config, now_cst, read_jsonl, resolve_path, write_json, write_jsonl
@@ -177,7 +178,12 @@ def generate_phase(config: dict[str, Any], run_id: str, adapter: str | None, ben
             rows = gsm8k_rows(config)
         else:
             raise ValueError(f"unknown benchmark {benchmark}")
-        generated = generate_benchmark(model, tokenizer, rows, config)
+        max_new = (
+            int(config["eval"].get("gsm8k_max_new_tokens", 512))
+            if benchmark == "gsm8k"
+            else int(config["eval"]["max_new_tokens"])
+        )
+        generated = generate_benchmark(model, tokenizer, rows, config, max_new_tokens=max_new)
         write_jsonl(out / f"{benchmark}.jsonl", generated)
         if benchmark == "xstest":
             summary = summarize_xstest(generated)
@@ -245,6 +251,44 @@ def judge_phase(config: dict[str, Any], runs: list[str]) -> None:
     torch.cuda.empty_cache()
 
 
+
+def judge_xstest_phase(config: dict[str, Any], runs: list[str]) -> None:
+    """Supplementary semantic refusal rate with Qwen3Guard.
+
+    The official XSTest metric is prefix string matching; it does not count
+    refusals phrased as "You cannot ...".  We keep the official number and add
+    this judge-based rate as a clearly labelled supplementary metric.
+    """
+    judge = Qwen3GuardJudge(
+        config["judge"]["path"],
+        batch_size=int(config["judge"]["batch_size"]),
+        max_new_tokens=max(24, int(config["judge"]["max_new_tokens"])),
+    )
+    for run_id in runs:
+        source = raw_dir(config, run_id) / "xstest.jsonl"
+        rows = read_jsonl(source)
+        judgments = judge.judge_responses([row["prompt"] for row in rows], [row["response"] for row in rows])
+        judged = []
+        for row, judgment in zip(rows, judgments, strict=True):
+            refusal = judgment.get("refusal")
+            if refusal is None:
+                refusal = is_refusal(row["response"])
+            judged.append({**row, "judge_safety": judgment["safety"], "judge_refusal": refusal})
+        write_jsonl(raw_dir(config, run_id) / "xstest_judged.jsonl", judged)
+        safe = [row["judge_refusal"] for row in judged if row["label"] == "safe"]
+        unsafe = [row["judge_refusal"] for row in judged if row["label"] == "unsafe"]
+        summary_path = raw_dir(config, run_id) / "xstest_summary.json"
+        summary = json.loads(summary_path.read_text()) if summary_path.exists() else {"benchmark": "XSTest"}
+        summary["safe_refusal_rate_judge"] = float(np.mean(safe)) if safe else None
+        summary["unsafe_refusal_rate_judge"] = float(np.mean(unsafe)) if unsafe else None
+        write_json(summary_path, summary)
+        print(
+            f"[{run_id}] XSTest judge refusal safe={summary['safe_refusal_rate_judge']} "
+            f"unsafe={summary['unsafe_refusal_rate_judge']}",
+            flush=True,
+        )
+
+
 def summary_phase(config: dict[str, Any]) -> None:
     root = Path(config["project_root"])
     rows = []
@@ -265,8 +309,15 @@ def summary_phase(config: dict[str, Any]) -> None:
                 elif benchmark == "xstest":
                     record["xstest_safe_refusal"] = data.get("safe_refusal_rate")
                     record["xstest_unsafe_refusal"] = data.get("unsafe_refusal_rate")
+                    record["xstest_safe_refusal_judge"] = data.get("safe_refusal_rate_judge")
+                    record["xstest_unsafe_refusal_judge"] = data.get("unsafe_refusal_rate_judge")
                 else:
                     record["gsm8k_acc"] = data.get("accuracy")
+        hb16_path = run_dir / "harmbench16_summary.json"
+        if hb16_path.exists():
+            hb16 = json.loads(hb16_path.read_text())
+            record["harmbench16_asr1"] = hb16.get("asr_at_1")
+            record["harmbench16_asr16"] = hb16.get("asr_at_k")
         dev_path = root / "runs" / run_id / "dev_metrics.json"
         if dev_path.exists():
             dev = json.loads(dev_path.read_text())
@@ -280,7 +331,18 @@ def summary_phase(config: dict[str, Any]) -> None:
             record["seed"] = meta["metrics"].get("seed")
             record["steps"] = meta["metrics"].get("steps")
         else:
-            record["method"] = "base" if run_id == "base" else run_id
+            record["method"] = "base" if run_id == "base" else run_id.split("_")[0]
+        if not record.get("steps"):
+            record["steps"] = 0 if run_id == "base" else 200
+        if not record.get("seed"):
+            record["seed"] = 42
+        notes = {
+            "sdsd_self_k1_seed42": "INVALID: degenerate repeated output; exclude from main table",
+            "sft_seed42": "exploratory: external safe-answer SFT; not the main SFT baseline",
+            "sdsd_external_refusal_100": "ablation: external refusal demonstrations, 100 steps",
+            "sdsd_k3_refusal_100": "ablation: K=3 self refusal demonstrations, 100 steps",
+        }
+        record["note"] = notes.get(run_id, "")
         rows.append(record)
     write_json(root / "results" / "summary.json", rows)
     columns = [
@@ -291,12 +353,17 @@ def summary_phase(config: dict[str, Any]) -> None:
         "harmbench_asr",
         "harmbench_ci_low",
         "harmbench_ci_high",
+        "harmbench16_asr1",
+        "harmbench16_asr16",
         "xstest_safe_refusal",
         "xstest_unsafe_refusal",
+        "xstest_safe_refusal_judge",
+        "xstest_unsafe_refusal_judge",
         "gsm8k_acc",
         "dev_harmful_safe",
         "dev_normal_refusal",
         "dev_normal_safe",
+        "note",
     ]
     with open(root / "results" / "summary.csv", "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns)
@@ -309,7 +376,7 @@ def summary_phase(config: dict[str, Any]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/qwen3_4b.yaml")
-    parser.add_argument("--phase", choices=["generate", "judge", "summarize"], required=True)
+    parser.add_argument("--phase", choices=["generate", "judge", "judge_xstest", "summarize"], required=True)
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--adapter", default=None)
     parser.add_argument("--benchmarks", default="harmbench,xstest,gsm8k")
@@ -327,6 +394,12 @@ def main() -> None:
         else:
             runs = sorted(path.parent.name for path in (Path(config["project_root"]) / "results" / "raw").glob("*/harmbench.jsonl"))
         judge_phase(config, runs)
+    elif args.phase == "judge_xstest":
+        if args.runs:
+            runs = [item.strip() for item in args.runs.split(",") if item.strip()]
+        else:
+            runs = sorted(path.parent.name for path in (Path(config["project_root"]) / "results" / "raw").glob("*/xstest.jsonl"))
+        judge_xstest_phase(config, runs)
     else:
         summary_phase(config)
 

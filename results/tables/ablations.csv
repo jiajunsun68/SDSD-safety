@@ -1,0 +1,5 @@
+run_id,method,steps,harmbench_asr,harmbench_ci_low,harmbench_ci_high,xstest_safe_refusal,xstest_safe_refusal_judge,xstest_unsafe_refusal,xstest_unsafe_refusal_judge,gsm8k_acc,dev_harmful_safe,dev_normal_refusal,note
+sdsd_external_refusal_100,sdsd,100,0.0525,0.0325,0.075,0.0,0.176,0.0,0.94,0.875,1.0,0.0,"ablation: external refusal demonstrations, 100 steps"
+sdsd_k3_refusal_100,sdsd,100,0.12,0.0875,0.1525,0.184,0.256,0.98,0.985,0.9,0.9966666666666667,0.0,"ablation: K=3 self refusal demonstrations, 100 steps"
+sft_seed42,sft,200,0.285,0.2425,0.33,0.012,0.068,0.03,0.59,0.71,0.9,0.0,exploratory: external safe-answer SFT; not the main SFT baseline
+sdsd_self_k1_seed42,sdsd,200,0.0,0.0,0.0,0.0,,0.0,,,0.78,0.0,INVALID: degenerate repeated output; exclude from main table

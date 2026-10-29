@@ -1,0 +1,10 @@
+run_id,method,seed,steps,harmbench_asr,harmbench_ci_low,harmbench_ci_high,harmbench16_asr1,harmbench16_asr16,xstest_safe_refusal,xstest_unsafe_refusal,xstest_safe_refusal_judge,xstest_unsafe_refusal_judge,gsm8k_acc,dev_harmful_safe,dev_normal_refusal,dev_normal_safe,note
+base,base,42,0,0.0475,0.0275,0.07,,,0.056,0.775,0.076,0.82,0.905,0.9966666666666667,0.01,0.99,
+grpo_seed42,grpo,42,200,0.0,0.0,0.0,,,0.976,1.0,0.98,1.0,0.805,,,,
+opsa_seed42,opsa,42,200,0.0525,0.0325,0.075,,,0.336,0.955,0.352,0.95,0.915,1.0,0.01,0.99,
+sdsd_external_refusal_100,sdsd,42,100,0.0525,0.0325,0.075,,,0.0,0.0,0.176,0.94,0.875,1.0,0.0,1.0,"ablation: external refusal demonstrations, 100 steps"
+sdsd_k3_refusal_100,sdsd,42,100,0.12,0.0875,0.1525,,,0.184,0.98,0.256,0.985,0.9,0.9966666666666667,0.0,1.0,"ablation: K=3 self refusal demonstrations, 100 steps"
+sdsd_refusal_k1_seed42,sdsd,42,200,0.0075,0.0,0.0175,,,0.74,1.0,0.732,1.0,0.705,1.0,0.03,0.99,
+sdsd_self_k1_seed42,sdsd,42,200,0.0,0.0,0.0,,,0.0,0.0,,,,0.78,0.0,1.0,INVALID: degenerate repeated output; exclude from main table
+sft_refusal_seed42,sft,42,200,0.02,0.0075,0.035,,,0.928,1.0,0.928,1.0,0.87,1.0,0.03,1.0,
+sft_seed42,sft,42,200,0.285,0.2425,0.33,,,0.012,0.03,0.068,0.59,0.71,0.9,0.0,0.99,exploratory: external safe-answer SFT; not the main SFT baseline

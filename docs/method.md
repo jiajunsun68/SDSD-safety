@@ -39,8 +39,10 @@ qualification rule and the role of the demonstration.
 A rollout is qualified when Qwen3Guard-Gen-4B returns `Safety: Safe` for the
 (prompt, response) pair.
 
-- Harmful prompt: a qualified rollout is a refusal or a safe alternative
-  response. Any safe behavior is accepted.
+- Harmful prompt: in the main method only qualified **refusals** are eligible
+  as demonstrations; safe alternative answers were tried and caused a
+  repeated-output collapse. A safe alternative can still be the SFT target or
+  the external fallback.
 - Normal prompt: a qualified rollout must additionally be non-refusing
   (official XSTest refusal prefixes) and at least 4 tokens long. This prevents
   degenerate refusals from becoming "good" normal-task demonstrations.
@@ -82,13 +84,13 @@ losses are averaged, matching the paper's K=3 ablation.
 
 ### 2.4 Teacher and reference
 
-The teacher is an EMA of the student's LoRA parameters with update rate 0.05
-(`theta_bar <- 0.95 theta_bar + 0.05 theta`) after each optimizer step. Because
+The teacher is an EMA of the student's LoRA parameters with update rate 0.02
+(`theta_bar <- 0.98 theta_bar + 0.02 theta`) after each optimizer step. Because
 training is LoRA-only, the EMA is over the trainable adapter parameters; the
 frozen base weights are shared conceptually but kept as a second model copy for
 implementation simplicity. The reference model is the frozen base model. A
-token-level reverse KL to the reference is added with coefficient 0.01 for SDSD
-and GRPO.
+token-level reverse KL to the reference is added with coefficient 0.03 for the
+main SDSD run and 0.01 for GRPO.
 
 ### 2.5 Objective
 
@@ -119,21 +121,28 @@ reference KL, matching OPSA's design.
 
 ### 2.7 GRPO baseline
 
-Standard group-relative policy optimization with 4 rollouts per prompt and a
-refusal-aware Qwen3Guard reward: harmful prompt `+1` if Safe and refusing,
-`0` if Safe but non-refusing, `-1` if unsafe; normal prompt `+1` if Safe and
-non-refusing else `-1`. The refusal term is needed because the base model is
-already Safe on ~98% of PKU rollouts, so a purely binary Safe/Unsafe reward
-gives zero within-group variance on almost every prompt (only 1/100 pilot
-groups had mixed labels). Advantages are normalized within each prompt group;
-the token-level clipped objective uses epsilon 0.2 and a reference KL
-coefficient of 0.01.
+Standard group-relative policy optimization with 4 rollouts per prompt. The
+reward is the continuous Qwen3Guard safety margin
+`log P(" Safe") - log P(" Unsafe")` at the guard's judgment position; normal
+prompts subtract 8.0 for a refusal; harmful prompts add 4.0 for a refusal (a
+pilot showed that the pure margin alone reduced the harmful refusal rate from
+0.75 to 0.28 by step 30, so the explicit refusal bonus keeps the baseline a
+safety-refusal policy). The margin is needed because the base model
+is already Safe on ~98% of PKU rollouts, so a binary Safe/Unsafe or binary
+refusal reward gives zero within-group variance on most prompts (only 3/50
+pilot groups had mixed binary rewards). The margin was validated on 150 PKU
+external responses: mean +7.0 for Qwen3Guard-Safe vs -3.7 for
+Unsafe/Controversial, with only a narrow overlap. Advantages are normalized
+within each prompt group; the token-level clipped objective uses epsilon 0.2
+and a reference KL coefficient of 0.01.
 
 ### 2.8 SFT baseline
 
 Assistant-token cross-entropy on the same external responses used as SDSD
-fallback demonstrations (PKU safe response for harmful prompts, alpaca response
-for normal prompts). No judge filtering is applied to these fixed targets.
+fallback demonstrations (Qwen3Guard-audited PKU safe response for harmful
+prompts, audited alpaca response for normal prompts). The audit keeps only
+external responses the judge marks Safe, so SFT does not learn from the 44% of
+PKU "safe" labels that Qwen3Guard rejects.
 
 ## 3. Evaluation protocol
 
@@ -168,7 +177,13 @@ assuming a win.
 
 ## 5. Deviations and limitations
 
-- 4B non-thinking backbone and 250 steps, not the paper's 8B/30-epoch QA scale.
+- 4B non-thinking backbone and 200 steps, not the paper's 8B/30-epoch QA scale.
+- The two SDSD ablations use 100 steps, so they are not budget-matched to the
+  200-step main run.
+- The main SDSD run uses lr 5e-5 while SFT/GRPO/OPSA use lr 1e-4; the higher
+  SDSD lr (1e-4) collapsed to repeated output.
+- SDSD's refusal demos over-generalize: the main model over-refuses XSTest safe
+  prompts (73.2%) and prepends a teacher-style meta sentence on GSM8K.
 - LoRA, not full-parameter fine-tuning; EMA is over adapter parameters.
 - One seed for the main table, with at most two additional exploratory seeds
   recorded separately if needed.
@@ -177,3 +192,27 @@ assuming a win.
 - The Qwen3Guard judge is also the GRPO reward source; the evaluation of safety
   uses an independent official HarmBench classifier and rule-based XSTest, but
   the judge's blind spots can enter training.
+
+
+## 6. Final results (2026-10-30)
+
+Main table (mean over 400 HarmBench behaviors, 450 XSTest prompts, 200 GSM8K
+questions; one seed):
+
+| Method | HarmBench ASR | XSTest safe refusal | XSTest unsafe refusal | GSM8K |
+|---|---|---|---|---|
+| Base | 4.75 | 7.6 | 82.0 | 90.5 |
+| SFT (refusal) | 2.00 | 92.8 | 100.0 | 87.0 |
+| GRPO | 0.00 | 98.0 | 100.0 | 80.5 |
+| OPSA | 5.25 | 35.2 | 95.0 | 91.5 |
+| SDSD-Safety K=1 self refusal | 0.75 | 73.2 | 100.0 | 70.5 |
+
+XSTest values are the Qwen3Guard semantic refusal rates; official string-match
+values and 95% CIs are in `results/tables/main.csv`.
+
+The result is a trade-off frontier rather than a free lunch. SDSD gives the
+largest ASR reduction but over-refuses and loses GSM8K; OPSA preserves
+capability and over-refusal but does not improve ASR over Base; SFT and GRPO
+are safe but nearly always refuse. The mechanism measurement (prefix KL,
+demo sensitivity) is consistent with SDSD concentrating an early-token
+refusal tilt, while OPSA makes a much smaller early-concentrated update.

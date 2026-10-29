@@ -166,7 +166,7 @@ def main() -> None:
             "harmful_candidates": len(pku_rows),
             "harmful_kept_safe": len(kept_harmful),
             "harmful_keep_rate": len(kept_harmful) / max(len(pku_rows), 1),
-            "normal_checked": len(selected_normal),
+            "normal_checked": len(normal_candidates),
             "normal_unsafe_or_refusal": unsafe_normal,
         },
         "counts": {

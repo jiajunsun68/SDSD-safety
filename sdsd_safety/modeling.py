@@ -213,8 +213,8 @@ def encode_sft_pair(tokenizer, prompt: str, response: str, max_length: int) -> d
         tokenize=False,
         add_generation_prompt=False,
     )
-    prompt_ids = _prompt_ids(tokenizer, prompt_text)
-    input_ids = _prompt_ids(tokenizer, full_text)
+    prompt_ids = tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
+    input_ids = tokenizer(full_text, add_special_tokens=False)["input_ids"]
     if input_ids[: len(prompt_ids)] != prompt_ids:
         raise ValueError("chat prefix mismatch for SFT example")
     labels = [-100] * len(prompt_ids) + input_ids[len(prompt_ids) :]

@@ -18,6 +18,7 @@ judge:
 
 data:
   train: data/train.jsonl
+  sft_train: data/train_sft.jsonl
   dev: data/dev.jsonl
   test: data/test.jsonl
   max_prompt_tokens: 512
@@ -55,6 +56,7 @@ train:
   teacher_update_rate: 0.05
   num_demos: 1
   demo_source: self     # self | external
+  teacher_mode: ema     # ema | frozen
   opsa_mixed_kl_weight: 0.5
   log_every: 1
   output_root: runs
@@ -64,3 +66,4 @@ eval:
   max_new_tokens: 192
   dev_max_rows: 400
   gsm8k_num_questions: 200
+  gsm8k_max_new_tokens: 512

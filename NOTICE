@@ -1,0 +1,26 @@
+Third-party sources reused by this repository
+================================================
+
+- XSTest refusal string matching
+  Source: https://github.com/paul-rottger/xstest
+  License: CC-BY-4.0
+  Reused in sdsd_safety/metrics.py (prefix list and label rule).
+
+- OPSA type-conditional safety prompts
+  Source: https://github.com/FYYFU/OPSA (Apache-2.0)
+  Paper: arXiv:2605.15239
+  Reused in sdsd_safety/train.py and sdsd_safety/make_sft_targets.py.
+
+- HarmBench behavior set, classifier prompt and evaluation protocol
+  Source: https://github.com/centerforaisafety/HarmBench
+  Reused in sdsd_safety/evaluate.py and sdsd_safety/harmbench16.py.
+  The local behavior CSV and cais/HarmBench-Llama-2-13b-cls weights are not
+  redistributed here.
+
+- SDSD paper (algorithm and mechanism analysis)
+  arXiv:2606.26091, Nicolicioiu, Pezeshki & Courville. No code was copied;
+  the objective and analysis are cited in docs/method.md.
+
+- Base model Qwen/Qwen3-4B-Instruct-2507 via ModelScope, Qwen3Guard-Gen-4B,
+  PKU-SafeRLHF-30K and alpaca-cleaned are downloaded locally and are not
+  redistributed in this repository; their upstream licenses apply.

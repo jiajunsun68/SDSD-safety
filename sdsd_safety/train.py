@@ -114,6 +114,10 @@ def select_demos(
             safe = safe and not is_refusal(sample["text"]) and len(sample["token_ids"]) >= min_tokens
         if safe:
             qualified.append(sample["text"])
+    if row["kind"] == "harmful" and config["train"].get("demo_preference") == "refusal":
+        refusals = [text for text in qualified if is_refusal(text)]
+        if refusals:
+            qualified = refusals
     rng.shuffle(qualified)
     external = [row["external_response"]]
     num_demos = int(config["train"].get("num_demos", 1))
@@ -121,6 +125,9 @@ def select_demos(
     if source == "external":
         demos = external * num_demos
         return demos, 0
+    if source == "external_refusal":
+        demo = row.get("sft_response") or row["external_response"]
+        return [demo] * num_demos, 0
     demos = qualified[:num_demos]
     used_self = len(demos)
     if len(demos) < num_demos:
@@ -138,7 +145,7 @@ def evaluate_dev(model, tokenizer, judge: Qwen3GuardJudge, rows: list[dict[str, 
         prompts,
         num_rollouts=1,
         max_new_tokens=int(config["data"]["max_new_tokens"]),
-        batch_size=int(config["eval"]["batch_size"]),
+        batch_size=min(8, int(config["eval"]["batch_size"])),
         greedy=True,
         max_prompt_tokens=int(config["data"]["max_prompt_tokens"]),
     )
@@ -187,7 +194,7 @@ def train_sft(student, tokenizer, judge, rows, config, run_dir, logger) -> list[
 
     cfg = config["train"]
     batch = int(cfg["batch_prompts"])
-    micro = min(8, batch)
+    micro = min(4, batch)
     max_length = int(config["data"]["max_prompt_tokens"]) + int(config["data"]["max_new_tokens"])
     optimizer = torch.optim.AdamW(
         [p for p in student.parameters() if p.requires_grad], lr=float(cfg["lr"]), weight_decay=float(cfg["weight_decay"])
@@ -197,7 +204,10 @@ def train_sft(student, tokenizer, judge, rows, config, run_dir, logger) -> list[
         started = time.time()
         student.train()
         optimizer.zero_grad(set_to_none=True)
-        encoded = [encode_sft_pair(tokenizer, row["prompt"], row["external_response"], max_length) for row in batch_rows]
+        encoded = [
+            encode_sft_pair(tokenizer, row["prompt"], row.get("sft_response") or row["external_response"], max_length)
+            for row in batch_rows
+        ]
         num_micro = math.ceil(len(encoded) / micro)
         loss_value = 0.0
         for start in range(0, len(encoded), micro):
@@ -299,14 +309,16 @@ def train_onpolicy(student, teacher, tokenizer, judge, rows, config, run_dir, lo
         ref_logprobs: list[torch.Tensor] = []
 
         if method == "grpo":
+            margins = judge.score_responses(
+                [row["prompt"] for row in flat_rows],
+                [sample["text"] for sample in flat_samples],
+            )
             rewards = []
-            for row, safe, refusal in zip(flat_rows, safe_flags, refusal_flags, strict=True):
+            for row, margin, refusal in zip(flat_rows, margins, refusal_flags, strict=True):
                 if row["kind"] == "harmful":
-                    # Refusal-aware safety reward: a safe refusal is the target;
-                    # a safe non-refusal is neutral; unsafe output is negative.
-                    rewards.append(1.0 if safe and refusal else (0.0 if safe else -1.0))
+                    rewards.append(float(margin) + (4.0 if refusal else 0.0))
                 else:
-                    rewards.append(1.0 if safe and not refusal else -1.0)
+                    rewards.append(float(margin) - (8.0 if refusal else 0.0))
             for start in range(0, len(flat_rows), n):
                 group = rewards[start : start + n]
                 mean = sum(group) / len(group)
@@ -380,10 +392,17 @@ def train_onpolicy(student, teacher, tokenizer, judge, rows, config, run_dir, lo
                         for row, demos in zip(chunk_rows, demo_lists, strict=True)
                     ]
                     with torch.no_grad():
-                        teacher_logits = completion_logits(
-                            teacher, tokenizer, teacher_prompts, chunk_ids,
-                            with_grad=False, max_prompt_tokens=int(config["data"]["max_prompt_tokens"]),
-                        )
+                        if teacher is not None:
+                            teacher_logits = completion_logits(
+                                teacher, tokenizer, teacher_prompts, chunk_ids,
+                                with_grad=False, max_prompt_tokens=int(config["data"]["max_prompt_tokens"]),
+                            )
+                        else:
+                            with student.disable_adapter():
+                                teacher_logits = completion_logits(
+                                    student, tokenizer, teacher_prompts, chunk_ids,
+                                    with_grad=False, max_prompt_tokens=int(config["data"]["max_prompt_tokens"]),
+                                )
                     per_demo.append(token_kl(logits, teacher_logits, direction="reverse"))
                 loss = torch.stack(per_demo).mean()
                 student.eval()
@@ -402,15 +421,19 @@ def train_onpolicy(student, teacher, tokenizer, judge, rows, config, run_dir, lo
             [p for p in student.parameters() if p.requires_grad], float(cfg["grad_clip"])
         )
         optimizer.step()
-        if method == "sdsd":
+        if method == "sdsd" and teacher is not None:
             ema_lora(student, teacher, decay=1.0 - float(cfg["teacher_update_rate"]))
 
+        harmful_idx = [i for i, row in enumerate(flat_rows) if row["kind"] == "harmful"]
+        normal_idx = [i for i, row in enumerate(flat_rows) if row["kind"] == "normal"]
         record = {
             "step": step,
             "loss": loss_sum / num_micro,
             "grad_norm": float(grad_norm),
             "rollout_safe_rate": sum(safe_flags) / len(safe_flags),
             "rollout_refusal_rate": sum(refusal_flags) / len(refusal_flags),
+            "harmful_refusal_rate": sum(refusal_flags[i] for i in harmful_idx) / max(len(harmful_idx), 1),
+            "normal_refusal_rate": sum(refusal_flags[i] for i in normal_idx) / max(len(normal_idx), 1),
             "mean_completion_tokens": sum(len(ids) for ids in completion_ids) / len(completion_ids),
             "demo_self_rate": demo_self / max(demo_total, 1) if method == "sdsd" else 0.0,
             "seconds": time.time() - started,
@@ -474,7 +497,7 @@ def main() -> None:
     logger.info("trainable parameters: %d (%.2fM)", trainable, trainable / 1e6)
 
     teacher = None
-    if method == "sdsd":
+    if method == "sdsd" and cfg.get("teacher_mode", "ema") == "ema":
         teacher_base = load_base_model(
             config["model"]["path"],
             dtype=config["model"]["dtype"],
@@ -487,12 +510,15 @@ def main() -> None:
         teacher.eval()
         logger.info("EMA teacher initialized from student")
 
-    judge = Qwen3GuardJudge(
-        config["judge"]["path"],
-        batch_size=int(config["judge"]["batch_size"]),
-        max_new_tokens=int(config["judge"]["max_new_tokens"]),
-    )
-    rows = read_jsonl(resolve_path(config, config["data"]["train"]))
+    judge = None
+    if method != "sft":
+        judge = Qwen3GuardJudge(
+            config["judge"]["path"],
+            batch_size=int(config["judge"]["batch_size"]),
+            max_new_tokens=int(config["judge"]["max_new_tokens"]),
+        )
+    train_key = "sft_train" if method == "sft" and config["data"].get("sft_train") else "train"
+    rows = read_jsonl(resolve_path(config, config["data"][train_key]))
     logger.info("training rows: %d", len(rows))
 
     if method == "sft":
@@ -500,12 +526,26 @@ def main() -> None:
     else:
         history = train_onpolicy(student, teacher, tokenizer, judge, rows, config, run_dir, logger)
 
-    logger.info("training finished; running dev evaluation")
+    logger.info("training finished; saving adapter before dev evaluation")
+    student.save_pretrained(run_dir / "checkpoint")
+    if teacher is not None:
+        teacher.save_pretrained(run_dir / "teacher_checkpoint")
+    if judge is None:
+        judge = Qwen3GuardJudge(
+            config["judge"]["path"],
+            batch_size=int(config["judge"]["batch_size"]),
+            max_new_tokens=int(config["judge"]["max_new_tokens"]),
+        )
     dev_rows = read_jsonl(resolve_path(config, config["data"]["dev"]))
     dev_limit = int(config["eval"].get("dev_max_rows", len(dev_rows)))
     dev_rows = dev_rows[:dev_limit]
-    dev_metrics = evaluate_dev(student, tokenizer, judge, dev_rows, config)
-    logger.info("dev metrics: %s", json.dumps(dev_metrics, sort_keys=True))
+    try:
+        dev_metrics = evaluate_dev(student, tokenizer, judge, dev_rows, config)
+        logger.info("dev metrics: %s", json.dumps(dev_metrics, sort_keys=True))
+    except torch.cuda.OutOfMemoryError as error:
+        logger.error("dev evaluation OOM; checkpoint is already saved: %s", error)
+        torch.cuda.empty_cache()
+        dev_metrics = {"error": "cuda_oom", "detail": str(error)}
     summary = {
         "run_id": run_id,
         "method": method,
