@@ -1,0 +1,66 @@
+project_root: /data4/sjj/catelogue/sdsd_safety
+seed: 42
+
+model:
+  path: /data4/sjj/models/Qwen3-4B-Instruct-2507
+  dtype: bfloat16
+  attn_implementation: sdpa
+  lora:
+    r: 32
+    alpha: 64
+    dropout: 0.05
+    target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+
+judge:
+  path: /data4/sjj/catelogue/alignment/models/Qwen3Guard-Gen-4B
+  batch_size: 32
+  max_new_tokens: 8
+
+data:
+  train: data/train.jsonl
+  dev: data/dev.jsonl
+  test: data/test.jsonl
+  max_prompt_tokens: 512
+  max_new_tokens: 128
+  min_response_chars: 20
+
+sources:
+  pku_train_arrow: /data4/sjj/.cache/huggingface/datasets/PKU-Alignment___pku-safe_rlhf/default/0.0.0/9421ffafec3fa40a1f1a7d567b4d525079477ecb/pku-safe_rlhf-train.arrow
+  alpaca_json: /data4/sjj/datasets/alpaca-cleaned/alpaca_data_cleaned.json
+  xstest_csv: /data4/sjj/datasets/xstest/xstest_prompts.csv
+  harmbench_csv: /data4/sjj/alignment/harmbench_official_8e1604d/data/behavior_datasets/harmbench_behaviors_text_all.csv
+  harmbench_classifier: /data4/szs/model_weights/HarmBench-Llama-2-13b-cls
+  gsm8k_test_parquet: /home/sjj/.cache/huggingface/hub/datasets--openai--gsm8k/snapshots/740312add88f781978c0658806c59bc2815b9866/main/test-00000-of-00001.parquet
+
+split:
+  harmful_train: 3200
+  harmful_dev: 300
+  harmful_test: 300
+  normal_train: 800
+  normal_dev: 100
+  normal_test: 100
+
+train:
+  method: sdsd          # sft | grpo | opsa | sdsd
+  steps: 200
+  batch_prompts: 16
+  num_rollouts: 4
+  lr: 1.0e-4
+  weight_decay: 0.0
+  warmup_steps: 10
+  grad_clip: 1.0
+  temperature: 1.0
+  top_p: 1.0
+  ref_kl_coef: 0.01
+  teacher_update_rate: 0.05
+  num_demos: 1
+  demo_source: self     # self | external
+  opsa_mixed_kl_weight: 0.5
+  log_every: 1
+  output_root: runs
+
+eval:
+  batch_size: 32
+  max_new_tokens: 192
+  dev_max_rows: 400
+  gsm8k_num_questions: 200

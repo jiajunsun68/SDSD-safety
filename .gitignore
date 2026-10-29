@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# Model / checkpoint weights
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+checkpoints/
+runs/
+outputs/
+
+# Data and caches (reproduced by scripts)
+data/
+datasets/
+*.arrow
+*.parquet
+
+# Large logs / raw generations
+logs/
+*.log
+results/raw/
+wandb/
+tensorboard/
+
+# Secrets / local machine state
+.env
+*.pem
+*.key
+**/token
+.DS_Store
