@@ -6,7 +6,7 @@
 
 | 项 | 当前值 |
 |---|---|
-| 阶段 | Stage 5：主实验与两个消融全部完成，结果已汇总；正在做最终文档、图表与 GitHub 同步 |
+| 阶段 | Stage 5 完成：主实验、两个消融、机制分析、结果汇总与 GitHub 推送均已完成 |
 | 当前模型 | 学生/教师：`Qwen/Qwen3-4B-Instruct-2507`（ModelScope，`/data4/sjj/models/Qwen3-4B-Instruct-2507`）<br>安全判别：`Qwen3Guard-Gen-4B`（本地）<br>HarmBench 官方分类器：`/data4/szs/model_weights/HarmBench-Llama-2-13b-cls` |
 | 数据 | PKU-SafeRLHF train（8,512 个“一 safe 一 unsafe”候选，Qwen3Guard 审计后保留 4,966 个外部安全回答）<br>alpaca-cleaned（正常题）<br>固定划分：train 4000 / dev 400 / test 400 |
 | 测试集 | HarmBench 400 behaviors（官方 classifier）、XSTest 450 prompts（官方字符串匹配 + Qwen3Guard 语义拒绝率）、GSM8K 200 题（512 tokens，exact match） |
@@ -107,5 +107,5 @@
 
 ## 最近同步
 
-- 2026-10-30 00:50 CST：已 push 到 `origin/main`，commit `ead8b1f`（`git ls-remote origin main` 核验一致）。含主表、消融、机制分析、README/NOTICE 与最终 status。
+- 2026-10-30 00:53 CST：已 push 到 `origin/main`，最新 commit `f7417d5`（`git ls-remote origin main` 核验一致）。`ead8b1f` 含主表/消融/机制/README/NOTICE；`f7417d5` 记录推送状态。
 - 上一次：2026-10-29 18:10 CST，commit `50e784d`。
