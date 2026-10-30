@@ -2,14 +2,39 @@
 
 将 SDSD 的示范条件自蒸馏用于安全对齐，并检验如何减少拒绝向正常任务的泛化。算法基础来自 [SDSD](https://arxiv.org/abs/2606.26091)；本项目的安全资格规则、条件教师组合和实验协议见 [方法说明](docs/method.md)，多教师与跨领域研究见 [研究记录](docs/research.md)。
 
-## 当前结果状态
+## v2 实际结果（2026-10-30）
 
-**已修复已发现的实现和评测问题，尚未获得 v2 的真实模型实验结果。** 修复工作区没有 GPU、原训练环境、模型、原始生成记录或数据缓存；当前 GitHub 连接仅允许读取。不能把本地回归测试、构造分布示例或历史分数当作重新训练后的结果。
+原 sjj 环境、GPU、模型与数据缓存可用。已重新审核请求意图/回答、生成统一拒绝 targets、完成 Base + 8 个 100-step 训练和 standard-200 评测。以下均为实际运行结果；旧结果只保留在 `results/legacy_0c455fd.json`，不参与 v2 表。
 
-- 历史数值完整保存在 [`results/legacy_0c455fd.json`](results/legacy_0c455fd.json)，附原提交、文件哈希和失效原因。原始数据没有被改成更好的分数。
-- [`results/summary.json`](results/summary.json) 是运行状态和结果台账，缺失、失败、旧协议运行明确标记为无效。
-- [`results/tables/main.md`](results/tables/main.md) 和 [`results/tables/ablations.md`](results/tables/ablations.md) 只接收完整、有效且可比较的 v2 运行，目前为空。
-- [`status.md`](status.md) 显示当前阻塞条件和真实队列状态；`planned`/`blocked` 不表示后台正在训练。
+主表（ASR 为官方 standard-200 + 官方 classified；XSTest 官方字符串拒绝为主，语义拒绝单列；GSM8K strict/flexible 单列）：
+
+| run | ASR % (95% CI) | XSTest safe↓（官方/语义） | XSTest unsafe↑（官方/语义） | GSM8K strict↑ | flexible |
+|---|---:|---:|---:|---:|---:|
+| base_v2 | 0.50 (0.09, 2.78) | 5.6 / 7.6 | 77.5 / 82.0 | 86.5 | 93.5 |
+| sft_v2_100 | 3.00 (1.38, 6.39) | 19.6 / 20.0 | 96.0 / 94.5 | 72.0 | 72.0 |
+| grpo_v2_100 | 0.50 (0.09, 2.78) | 27.6 / 31.6 | 99.0 / 96.5 | 67.5 | 69.5 |
+| opsa_v2_100 | 0.50 (0.09, 2.78) | 14.4 / 16.4 | 89.5 / 87.5 | 90.0 | 92.0 |
+| **sdsd_v2_k1** | **0.50 (0.09, 2.78)** | **9.2 / 10.0** | **82.5 / 83.0** | **91.0** | 91.0 |
+
+消融与改进候选（同 100-step 预算）：
+
+| run | ASR % | safe↓（官方/语义） | unsafe↑（官方/语义） | GSM8K strict | flexible |
+|---|---:|---:|---:|---:|---:|
+| SDSD external-refusal K1 | 0.50 | 9.6 / 12.0 | 86.0 / 86.0 | 93.0 | 93.0 |
+| SDSD EMA+frozen(0.25) anchor K1 | 0.50 | 6.8 / 10.0 | 79.5 / 83.0 | 92.5 | 92.5 |
+| SDSD K3 mean-KL | 0.50 | 6.8 / 10.0 | 79.5 / 83.5 | 92.5 | 92.5 |
+| SDSD K3 probability-mean | 1.00 | 7.2 / 9.6 | 75.5 / 83.0 | 91.5 | 91.5 |
+
+关键发现：
+
+1. **Base 已接近 ASR 地板**：standard-200 仅 1/200 harmful，ASR 0.50%。除 SFT（6/200）外，所有安全方法保持 1/200（K3 probability-mean 为 2/200）。因此“降低 ASR”的空间只有 0.5 个百分点，不能把 ASR 当唯一胜负轴。
+2. **SFT/GRPO 的安全收益伴随严重过拒绝和能力损失**：官方 safe refusal 19.6%/27.6%（Base 5.6%），GSM8K strict 72.0%/67.5%（Base 86.5%）；二者被 Base 和多个 SDSD 变体 Pareto 支配。
+3. **SDSD K1 保留能力、避免 SFT/GRPO 式过拒绝**：strict GSM8K 91.0%（+4.5 vs Base），官方 safe refusal 9.2%（+3.6），unsafe refusal 82.5%（+5.0），ASR 保持 0.50%。在正式三指标上它支配 OPSA、SFT、GRPO。
+4. **多教师改善的是过拒绝/格式，不是 ASR**：EMA+frozen(0.25) 与 K3 mean-KL 都把官方 safe refusal 降到 6.8%（接近 Base 5.6%），strict GSM8K 为 92.5%，ASR 仍 0.50%，并支配 K1。两者指标相同；frozen anchor 只需一次额外前向，K3 需三次，故 anchor 更划算。K3 probability-mean 没有更好（ASR 1.00%，strict 91.5%）。
+5. **strict 提升主要是格式标准化**：Base 有 21 个 strict parse failure、194/200 个 final marker；SDSD 变体为 1–3 个 failure、199/200 个 marker。Base 的 flexible GSM8K 是 93.5%，高于 anchor/K3 的 92.5%、K1 的 91.0%；因此不能宣称 SDSD 提升了真实数学能力，只能说不像 SFT/GRPO 那样明显损失，并统一了输出格式。
+6. **Pareto 结论**：非支配点为 Base、frozen anchor、K3 mean-KL、external K1。Base 的过拒绝最低；anchor/K3 用约 +1.2 个百分点的官方过拒绝换取 strict GSM8K 92.5（主要来自格式）；external K1 用 +4.0 过拒绝换取 unsafe refusal 86.0 和 flexible GSM8K 93.0。没有方法同时改善三轴。
+
+数据与评测：审核 13,312 个候选，接受 9,041（harmful 4,062 / normal 4,979）；train 2,000+2,000，dev/test 各 200+200；targets 为 1,957 条自拒绝 + 43 条已验证 fallback。边界敏感正常样本实际只有 28/1/1（低于 25% 目标，已记录）。GSM8K 诊断、Pareto 与逐 run 结果分别在 `results/tables/pareto.md`、`results/tables/main.md`、`results/tables/ablations.md`、`results/summary.json`。
 
 ## 已修复的问题
 

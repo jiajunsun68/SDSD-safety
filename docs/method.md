@@ -98,6 +98,28 @@ GSM8K 同值数字、分数和小数归一化；正常礼貌开头不自动视�
 
 每个训练最多保存最新学生与 EMA adapter，不保存多代 checkpoint；无 optimizer 精确恢复。评测与机制分析复用 raw 输出；摘要推送不包含权重或完整回答。
 
-## 8. 当前验证边界
+## 8. v2 实际结果（2026-10-30）
 
-当前工作区完成的是代码修复、CPU 回归检查、官方模板逐字核验与构造机制计算。真实 tokenizer/model smoke、Torch 梯度测试、数据审核、训练、基准评测及远端推送仍需原 sjj 环境和写权限。实际状态见 [`status.md`](../status.md)。
+原 sjj 环境完成：19/19 回归（含 3 项 Torch 梯度）、审核 13,312 候选（接受 9,041）、1,957+43 条验证 targets、2-step SDSD smoke、Base + 8 个 100-step run、standard-200/XSTest/GSM8K 评测。
+
+| run | ASR % | safe↓（官方/语义） | unsafe↑（官方/语义） | GSM8K strict | flexible |
+|---|---:|---:|---:|---:|---:|
+| Base | 0.50 | 5.6 / 7.6 | 77.5 / 82.0 | 86.5 | 93.5 |
+| SFT | 3.00 | 19.6 / 20.0 | 96.0 / 94.5 | 72.0 | 72.0 |
+| GRPO | 0.50 | 27.6 / 31.6 | 99.0 / 96.5 | 67.5 | 69.5 |
+| OPSA | 0.50 | 14.4 / 16.4 | 89.5 / 87.5 | 90.0 | 92.0 |
+| SDSD K1 self | 0.50 | 9.2 / 10.0 | 82.5 / 83.0 | 91.0 | 91.0 |
+| SDSD external K1 | 0.50 | 9.6 / 12.0 | 86.0 / 86.0 | 93.0 | 93.0 |
+| SDSD EMA+frozen 0.25 K1 | 0.50 | 6.8 / 10.0 | 79.5 / 83.0 | 92.5 | 92.5 |
+| SDSD K3 mean-KL | 0.50 | 6.8 / 10.0 | 79.5 / 83.5 | 92.5 | 92.5 |
+| SDSD K3 probability-mean | 1.00 | 7.2 / 9.6 | 75.5 / 83.0 | 91.5 | 91.5 |
+
+结论：
+
+- Base 在 standard-200 只有 1/200 harmful，ASR 已接近地板；除 SFT 的 6/200 外，其余安全方法保持 1/200（K3 probability-mean 2/200）。不能仅凭 ASR 判断方法优劣。
+- SFT/GRPO 提高 unsafe refusal（96–99%）但官方 safe refusal 达 19.6%/27.6%，GSM8K strict 降至 72.0%/67.5%；在正式三指标上被 Base 及多个 SDSD 变体支配。
+- SDSD K1 保持 ASR 0.50%，官方 safe refusal 9.2%，GSM8K strict 91.0%；在正式三指标上支配 OPSA、SFT、GRPO。
+- EMA+frozen(0.25) 与 K3 mean-KL 把 official safe refusal 降到 6.8%、strict GSM8K 92.5%，并支配 K1；两者指标相同，anchor 计算更省。K3 probability-mean 无优势（ASR 1.00%）。
+- strict GSM8K 的提升主要是格式：Base 21 个 strict parse failure、194/200 marker；SDSD 变体 1–3 个 failure、199/200 marker。Base flexible 93.5%，anchor/K3 92.5%、K1 91.0%，因此不宣称真实能力提升。
+- 多教师改善过拒绝/格式与 strict 指标，不改善 ASR；Pareto 非支配点为 Base、anchor、K3 mean-KL、external K1。
+- 单 seed、100 steps、standard-200、边界敏感样本仅 28 条；这些是当前协议下的经验结论。

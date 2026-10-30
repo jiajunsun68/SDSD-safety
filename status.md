@@ -1,99 +1,83 @@
 # SDSD-Safety — 项目进度
 
-## 当前结论（2026-10-30）
+最后更新：2026-10-30 17:45 (Asia/Shanghai)
 
-已完成修复后的 v2 实现、研究候选和本地统一复核。**原 sjj 环境、GPU、模型与数据缓存均可用；v2 请求意图/回答审核正在 GPU0 运行。** 修复基于远端提交 `0c455fd6b824534e6bb6f606c9b722889a9ee819`；尚未推送。
+## 当前结论
 
-历史主表与机制数值已移入 `results/legacy_0c455fd.json`，保留原值、来源哈希与失效原因。新主表只接收实际完成的 v2 运行，当前为空。构造分布示例和回归夹具不进入实验结果。
+v2 修复、数据审核、统一 targets、2 步 GPU smoke、Base + 8 个 100-step 训练和 standard-200/XSTest/GSM8K 评测均已完成。全部 9 个正式 run 通过 provenance/validity 检查；当前无运行中任务。旧 200-step 结果保留在 `results/legacy_0c455fd.json`，不参与 v2 表。
 
-## 已完成与待执行
+**核心结果：Base 在 standard-200 仅 1/200 harmful，ASR 已在地板；SFT/GRPO 用严重过拒绝和能力损失换取更高 unsafe refusal；SDSD 保持 ASR=0.5%、显著减少过拒绝并保持能力；EMA+frozen anchor 与 K3 mean-KL 进一步改善过拒绝/格式，但没有可测的 ASR 收益。**
 
-| 工作 | 状态 | 说明 |
-|---|---|---|
-| 数据与示范资格修复 | 已实现 | 请求意图独立审核、正常敏感请求保留、split 边界样本预留、统一 targets 与 manifest |
-| 训练算法修复 | 已实现 | GRPO 真 KL、dropout、归一化、warmup、原问题保留、严格拒绝与完成记录 |
-| 评测与结果来源修复 | 已实现 | standard200 官方模板、Wilson/缺失值、数字解析、旧协议隔离 |
-| 多教师与跨领域研究 | 已完成首轮 | `docs/research.md`；条件冻结混合与概率池化开关已实现 |
-| CPU 回归与构造示例 | 已运行 | 19 项回归：16 通过、3 因缺少 Torch 跳过；构造示例计算完成 |
-| 真模型 smoke | 待执行 | 审核/targets 完成后用 2–4 步小 run 核验教师条件化、KL 梯度、保存与评测 |
-| 新数据审核、训练与评测 | 运行中 | v2 审核 GPU0 PID 3079582；之后按 8 个 100-step run 执行 |
-| 真实结果替换与 GitHub push | 待训练/评测 | 先本地有效结果，再 commit/push |
+## 主结果
 
-## 固定执行顺序
+所有数字来自本机实际运行。ASR=官方 HarmBench standard-200 + 官方 Llama-2-13B 模板；XSTest 官方字符串拒绝为主、Qwen3Guard 语义拒绝单列；GSM8K strict/flexible 单列。
 
-1. 复用原环境执行回归检查，重新审核候选请求/回答，写入同一份已验证 targets。
-2. Base + SFT/GRPO/OPSA/SDSD K1，100 updates、seed42。
-3. 外部拒绝 K1 与 K3 mean-KL 的同预算消融。
-4. K1 条件冻结混合（0.25）与 K3 probability-mean 两个候选。
-5. 根据真实三项指标判断是否改善安全—能力取舍；保留有效负结果。
+| run | ASR % (95% CI) | XSTest safe↓（官方/语义） | XSTest unsafe↑（官方/语义） | GSM8K strict↑ | flexible |
+|---|---:|---:|---:|---:|---:|
+| base_v2 | 0.50 (0.09, 2.78) | 5.6 / 7.6 | 77.5 / 82.0 | 86.5 | 93.5 |
+| sft_v2_100 | 3.00 (1.38, 6.39) | 19.6 / 20.0 | 96.0 / 94.5 | 72.0 | 72.0 |
+| grpo_v2_100 | 0.50 (0.09, 2.78) | 27.6 / 31.6 | 99.0 / 96.5 | 67.5 | 69.5 |
+| opsa_v2_100 | 0.50 (0.09, 2.78) | 14.4 / 16.4 | 89.5 / 87.5 | 90.0 | 92.0 |
+| sdsd_v2_k1 | 0.50 (0.09, 2.78) | 9.2 / 10.0 | 82.5 / 83.0 | 91.0 | 91.0 |
+| sdsd_v2_external_k1 | 0.50 (0.09, 2.78) | 9.6 / 12.0 | 86.0 / 86.0 | 93.0 | 93.0 |
+| sdsd_v2_anchor_k1 | 0.50 (0.09, 2.78) | 6.8 / 10.0 | 79.5 / 83.0 | 92.5 | 92.5 |
+| sdsd_v2_k3_logpool | 0.50 (0.09, 2.78) | 6.8 / 10.0 | 79.5 / 83.5 | 92.5 | 92.5 |
+| sdsd_v2_k3_linpool | 1.00 (0.27, 3.57) | 7.2 / 9.6 | 75.5 / 83.0 | 91.5 | 91.5 |
 
-完整命令：在真实 upstream checkout 应用修复后，执行 `QUEUE=all GPU=0 bash scripts/run_main_queue.sh --execute --push`。不具备环境时 runner 记录 `blocked`；`--plan-only` 只记录计划。
+### Pareto / 多教师结论
 
-## 本次环境
+- 非支配点（按 ASR↓、官方 XSTest safe↓、GSM8K strict↑）：Base、EMA+frozen anchor、K3 mean-KL、external K1。
+- `anchor` 与 `K3 mean-KL` 指标相同（ASR 0.50%、safe 6.8%、strict 92.5%），都支配 K1（safe 9.2%、strict 91.0%）；anchor 只需一次额外条件前向，K3 需三次 → anchor 更划算。
+- K3 mean-KL 在正式三指标上支配 probability-mean（ASR 0.50% vs 1.00%，safe 6.8% vs 7.2%，strict 92.5% vs 91.5%）；概率池化没有改善权衡。
+- SFT/GRPO 被 Base 及多个 SDSD 变体支配；OPSA 被 SDSD 变体支配。
+- strict GSM8K 的提升主要是格式标准化：Base 有 21 个 strict parse failure、194/200 marker；SDSD 变体 1–3 个 failure、199/200 marker。Base flexible 93.5% 仍高于 anchor/K3 92.5%、K1 91.0%，所以不宣称真实数学能力提升。
 
-- Python: `/data4/sjj/catelogue/alignment/safety-component/.venv-v31/bin/python`（torch 2.5.1+cu121, transformers 5.8.0, peft 0.19.1）。
-- 8×A800-80GB；2026-10-30 11:40 GPU0 空闲 64 GB，GPU4/5/6 各约 51–56 GB 空闲。
-- 模型/数据/benchmark 缓存路径与 v2 配置一致，无需下载。
-- GitHub SSH 写权限沿用 `jiajunsun68`。
+## 数据审核与 smoke
 
-## 验证记录
+- 审核 13,312 个候选，接受 9,041：harmful 4,062 / normal 4,979。
+- train 2,000 harmful + 2,000 normal；dev/test 各 200+200；按请求去重并排除 HarmBench/XSTest/GSM8K 精确文本。
+- boundary_normal 实际 28 / 1 / 1（低于 25% 目标；候选不足，已记录，未复制样本）。
+- targets：1,957 条自拒绝 + 43 条已验证 fallback；所有方法共享同一 train 文件与 SFT targets。
+- 2-step SDSD smoke（GPU4）：loss/grad 有限、EMA teacher 初始化、student/teacher adapter 保存、4 行 dev 评测成功。smoke checkpoint 已删除，日志保留。
 
-- HarmBench standard 分类模板与官方 `eval_utils.py` 精确相同；SHA256：`788f4f6aa1491c433c4da76c9140cfc30966cea3ff3875c4d0fcb336d92f60e0`。
-- `scripts/teacher_pooling_probe.py` 已实际运行，恒等式误差约 `2.22e-16`；输出明确标为人工构造示例，不是 LLM 实验。
-- `python -m unittest discover -s tests -v`：19 项，16 通过，3 项因缺少 Torch 跳过；原环境队列要求这三项实际通过。
-- 17 个 Python 文件 AST 解析通过，队列 shell 的 `bash -n` 通过；历史 9 条结果与两份机制 payload 已逐项确认原值未变。
-- 本地实际执行 `queue --group all --execute` 于环境检查阶段退出，记录 10 项缺失条件；47 个顺序步骤中 8 个为训练任务，实际启动子任务 0 个、运行 PID 为空。
+## 运行记录
 
-<!-- QUEUE:START -->
-更新：2026-10-30 11:40:32 CST；队列状态：**planned**；GPU：0
+| 阶段 | GPU | PID / 结果 | 状态 |
+|---|---|---|---|
+| Q01 回归（19 项，含 Torch 梯度） | — | 19/19 pass | succeeded |
+| Q02 审核 | 0 | PID 3091089 | succeeded |
+| Q03 验证 targets | 0 | PID 3160350 | succeeded |
+| Q04-Q06 Base 评测 | 0 | ASR 0.5%、XSTest 5.6/77.5、GSM8K 86.5/93.5 | succeeded |
+| Q08-Q11 SFT | 0 | ASR 3.0%、safe 19.6%、strict 72.0% | succeeded |
+| Q13-Q16 GRPO | 0 | ASR 0.5%、safe 27.6%、strict 67.5% | succeeded |
+| Q18-Q21 OPSA | 0 | 训练后手动评测；ASR 0.5%、safe 14.4%、strict 90.0% | succeeded |
+| Q23-Q26 SDSD K1 | 4 | PID 3502363 lane；ASR 0.5%、safe 9.2%、strict 91.0% | succeeded |
+| Q28-Q31 外部拒绝 K1 | 4 | ASR 0.5%、safe 9.6%、strict 93.0% | succeeded |
+| Q33-Q36 K3 mean-KL | 4 | ASR 0.5%、safe 6.8%、strict 92.5% | succeeded |
+| Q38-Q41 frozen anchor K1 | 5 | ASR 0.5%、safe 6.8%、strict 92.5% | succeeded |
+| Q43-Q46 K3 probability-mean | 5 | ASR 1.0%、safe 7.2%、strict 91.5% | succeeded |
+| Q47 汇总/diagnose/Pareto | — | `results/summary.json`、`results/tables/*` | succeeded |
 
-| ID | 任务 | 状态 | PID | Exit | 最近输出 / 原因 |
-|---|---|---|---|---|---|
-| Q01 | Run regression and Torch gradient tests | planned | — | — |  |
-| Q02 | Audit request intent and helpful answers | planned | — | — |  |
-| Q03 | Verify shared refusal targets | planned | — | — |  |
-| Q04 | Generate base_v2 | planned | — | — |  |
-| Q05 | Score safety base_v2 | planned | — | — |  |
-| Q06 | Score over-refusal base_v2 | planned | — | — |  |
-| Q07 | Refresh tables after base_v2 | planned | — | — |  |
-| Q08 | Train sft_v2_100_seed42 | planned | — | — |  |
-| Q09 | Generate sft_v2_100_seed42 | planned | — | — |  |
-| Q10 | Score safety sft_v2_100_seed42 | planned | — | — |  |
-| Q11 | Score over-refusal sft_v2_100_seed42 | planned | — | — |  |
-| Q12 | Refresh tables after sft_v2_100_seed42 | planned | — | — |  |
-| Q13 | Train grpo_v2_100_seed42 | planned | — | — |  |
-| Q14 | Generate grpo_v2_100_seed42 | planned | — | — |  |
-| Q15 | Score safety grpo_v2_100_seed42 | planned | — | — |  |
-| Q16 | Score over-refusal grpo_v2_100_seed42 | planned | — | — |  |
-| Q17 | Refresh tables after grpo_v2_100_seed42 | planned | — | — |  |
-| Q18 | Train opsa_v2_100_seed42 | planned | — | — |  |
-| Q19 | Generate opsa_v2_100_seed42 | planned | — | — |  |
-| Q20 | Score safety opsa_v2_100_seed42 | planned | — | — |  |
-| Q21 | Score over-refusal opsa_v2_100_seed42 | planned | — | — |  |
-| Q22 | Refresh tables after opsa_v2_100_seed42 | planned | — | — |  |
-| Q23 | Train sdsd_v2_k1_100_seed42 | planned | — | — |  |
-| Q24 | Generate sdsd_v2_k1_100_seed42 | planned | — | — |  |
-| Q25 | Score safety sdsd_v2_k1_100_seed42 | planned | — | — |  |
-| Q26 | Score over-refusal sdsd_v2_k1_100_seed42 | planned | — | — |  |
-| Q27 | Refresh tables after sdsd_v2_k1_100_seed42 | planned | — | — |  |
-| Q28 | Train sdsd_v2_external_k1_100_seed42 | planned | — | — |  |
-| Q29 | Generate sdsd_v2_external_k1_100_seed42 | planned | — | — |  |
-| Q30 | Score safety sdsd_v2_external_k1_100_seed42 | planned | — | — |  |
-| Q31 | Score over-refusal sdsd_v2_external_k1_100_seed42 | planned | — | — |  |
-| Q32 | Refresh tables after sdsd_v2_external_k1_100_seed42 | planned | — | — |  |
-| Q33 | Train sdsd_v2_k3_logpool_100_seed42 | planned | — | — |  |
-| Q34 | Generate sdsd_v2_k3_logpool_100_seed42 | planned | — | — |  |
-| Q35 | Score safety sdsd_v2_k3_logpool_100_seed42 | planned | — | — |  |
-| Q36 | Score over-refusal sdsd_v2_k3_logpool_100_seed42 | planned | — | — |  |
-| Q37 | Refresh tables after sdsd_v2_k3_logpool_100_seed42 | planned | — | — |  |
-| Q38 | Train sdsd_v2_anchor_k1_100_seed42 | planned | — | — |  |
-| Q39 | Generate sdsd_v2_anchor_k1_100_seed42 | planned | — | — |  |
-| Q40 | Score safety sdsd_v2_anchor_k1_100_seed42 | planned | — | — |  |
-| Q41 | Score over-refusal sdsd_v2_anchor_k1_100_seed42 | planned | — | — |  |
-| Q42 | Refresh tables after sdsd_v2_anchor_k1_100_seed42 | planned | — | — |  |
-| Q43 | Train sdsd_v2_k3_linpool_100_seed42 | planned | — | — |  |
-| Q44 | Generate sdsd_v2_k3_linpool_100_seed42 | planned | — | — |  |
-| Q45 | Score safety sdsd_v2_k3_linpool_100_seed42 | planned | — | — |  |
-| Q46 | Score over-refusal sdsd_v2_k3_linpool_100_seed42 | planned | — | — |  |
-| Q47 | Refresh tables after sdsd_v2_k3_linpool_100_seed42 | planned | — | — |  |
-<!-- QUEUE:END -->
+执行方式：`QUEUE=all` 先完成 Q01-Q04；为避免 GPU0 显存被其他任务挤压，runner 在 SDSD 前停止，随后按同一份 queue plan 命令在 GPU0/4/5 三 lane 并行训练/评测；无重复 run，最终统一 summarize。当前无排队任务。
+
+## 文件与 checkpoint
+
+- 主表：`results/tables/main.md` / `main.csv`；消融：`results/tables/ablations.md` / `ablations.csv`；Pareto：`results/tables/pareto.md` / `pareto.json`；台账：`results/summary.json` / `summary.csv`。
+- GSM8K 诊断：`results/raw/<run>/gsm8k_diagnostics.json`。
+- Adapter：`runs/<run_id>/checkpoint`；SDSD 另存 `teacher_checkpoint`。每 run 一份最终学生 adapter 与必要教师 adapter，无 optimizer，无多代 checkpoint。
+- 原始生成：`results/raw/<run_id>/`（未入 Git）。
+- v1 数据与结果：`data/legacy_0c455fd/`、`results/legacy_0c455fd.json`。
+
+## 限制与下一步
+
+- 单 seed（42）、100 steps、LoRA 4B；未做多 seed 方差。
+- standard-200 的 Base ASR 仅 1/200，安全下降空间只有 0.5 个百分点；需要 ASR@16 或更强越狱攻击集才能区分安全方法。
+- boundary 敏感正常样本仅 28 条，未达到 25% 目标；若验证边界覆盖的因果作用，需要更大、经审核的敏感但合法语料。
+- SDSD 的 strict GSM8K 提升主要是格式；flexible 指标显示没有真实能力增益。
+- 多教师只改善过拒绝/格式，不改善 ASR；下一步最有价值的是在更难攻击集上检验 anchor/K3 是否能降低 ASR@k。
+- 建议下一阶段：8B + 多 seed、ASR@16/StrongReject/JailbreakBench、边界样本扩充，以及把 anchor 作为默认 SDSD 训练配置。
+
+## 最近同步
+
+- v2 修复代码已推送 `origin/main` commit `d4c14e3`。
+- 本轮结果/文档定稿后将再次 commit/push，并在 `git ls-remote origin main` 核验。

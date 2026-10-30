@@ -1,6 +1,6 @@
 # SDSD-Safety：过拒绝、能力保留与多教师的最小研究方案
 
-日期：2026-10-30。本文是修复实验后的候选设计与文献依据，不是新的 LLM 实验结果。当前工作环境没有原训练 GPU、模型权重和 `/data4/sjj` 数据；下文只有三个明确构造的 NumPy 机制例子。历史主表不能用来评价尚未训练的改动。
+日期：2026-10-30。本文最初是修复实验后的候选设计与文献依据；第 7 节现已补入在 sjj 原环境实际完成的 v2 结果。第 5 节的三个 NumPy 例子仍明确标为构造机制示例；历史主表不参与 v2 结论。
 
 ## 1. 优先做什么
 
@@ -177,3 +177,17 @@ x_{t+1}=(1-\eta)x_t+\eta[(1-a)(m_t+b)+a x_0],
 9. Shepard (1987). *Toward a universal law of generalization for psychological science*. [原文摘要](https://pubmed.ncbi.nlm.nih.gov/3629243/)，[大学研究组保存的原文](https://worthylab.org/wp-content/uploads/2018/01/shepard1987.pdf)。心理距离与泛化关系；对 LLM 只作明确标记的设计类比。
 10. Nicolicioiu, Pezeshki & Courville. SDSD paper. [原论文](https://arxiv.org/pdf/2606.26091)。用于原方法与 K=3 对照归属；其多样性分析不自动等价于安全保证。
 11. OPSA. [原论文](https://arxiv.org/html/2605.15239v1)。冻结教师、任务条件提示与 on-policy safety distillation 的近邻工作；本项目应明确对照，避免重复宣称首次提出。
+
+
+## 7. v2 实际结果与多教师判定（2026-10-30）
+
+实际完成：19/19 回归（3 项 Torch 梯度未跳过）、数据审核/targets、Base + 8 个 100-step run、standard-200/XSTest/GSM8K。逐 run 表在 `results/tables/main.md`、`results/tables/ablations.md`，Pareto 在 `results/tables/pareto.md`。
+
+- **SFT/GRPO**：ASR 3.00%/0.50%，官方 XSTest safe refusal 19.6%/27.6%，GSM8K strict 72.0%/67.5%。提高 unsafe refusal 但严重过拒绝、损失能力，被 Base 与 SDSD 变体 Pareto 支配。
+- **SDSD K1 self**：ASR 0.50%，safe 9.2%，unsafe 82.5%，GSM8K strict 91.0%/flexible 91.0%。相对 Base（safe 5.6%，flexible 93.5%）是“略多过拒绝 + 统一格式”的权衡；它支配 OPSA、SFT、GRPO。
+- **A：EMA+frozen(0.25)**：ASR 0.50%，safe 6.8%，unsafe 79.5%，GSM8K strict 92.5%。与 K3 mean-KL 指标相同，支配 K1；多教师改善过拒绝/格式，不改善 ASR。
+- **B：K3 mean-KL vs probability-mean**：mean-KL ASR 0.50%、safe 6.8%、strict 92.5%；probability-mean ASR 1.00%、safe 7.2%、strict 91.5%。在正式三指标上 mean-KL 支配 probability-mean；算术池没有带来更好权衡。
+- **Pareto 非支配点**：Base、EMA+frozen anchor、K3 mean-KL、external K1。没有方法同时改善 ASR、过拒绝和 GSM8K。Base 的 standard-200 ASR 仅 1/200，ASR 已接近地板。
+- **能力解释**：strict GSM8K 的 +4.5～6.5 提升主要来自格式标准化（Base 21 个 strict parse failure，SDSD 1–3 个；flexible Base 93.5% 仍高于 SDSD 91.0–93.0%）。因此不能把 strict 提升写成真实数学能力提升。
+
+这些结果支持：修复后 SDSD 在安全基座上的价值主要是**避免 SFT/GRPO 的过拒绝与能力损失**，以及用条件冻结锚限制漂移；在当前 Base 的 ASR 地板上，多教师蒸馏没有可测的 ASR 收益。
