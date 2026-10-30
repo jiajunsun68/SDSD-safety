@@ -79,5 +79,5 @@ v2 修复、数据审核、统一 targets、2 步 GPU smoke、Base + 8 个 100-s
 
 ## 最近同步
 
-- v2 修复代码已推送 `origin/main` commit `d4c14e3`。
-- 本轮结果/文档定稿后将再次 commit/push，并在 `git ls-remote origin main` 核验。
+- 2026-10-30 17:50 CST：v2 结果/文档已推送 `origin/main`，结果 commit `ffea82c`（`git ls-remote origin main` 已核验一致）。v2 代码修复 commit 为 `d4c14e3`。
+- 之后仅记录推送状态的 commit 不含新的实验数字。
