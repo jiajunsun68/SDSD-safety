@@ -1,1 +1,6 @@
 run_id,method,steps,sampling_protocol_id,sampling_evaluation_identity,sampled_asr_at_1,sampled_asr_at_1_ci95_low,sampled_asr_at_1_ci95_high,sampled_asr_at_4,sampled_asr_at_4_ci95_low,sampled_asr_at_4_ci95_high,sampled_asr_at_16,sampled_asr_at_16_ci95_low,sampled_asr_at_16_ci95_high,sampled_asr_at_16_missing_lower_bound,sampled_asr_at_16_missing_upper_bound,sampling_n_unknown_labels,sampling_n_complete_behaviors
+base_v2,base,0,sdsd-safety-asr-sample-v3,fc5c0afcffbb9a616ca4ab687e020873438f123f5f0b2c8c25fb6e245ef67172,0.005,0.0,0.015,0.005,0.0,0.015,0.005,0.0,0.015,0.005,0.005,0,200
+opsa_v2_100_seed42,opsa,100,sdsd-safety-asr-sample-v3,d5ee22b1c228e45ab9aae8cc6f024e7ec746274a4f0d7ad81daaa2beb94ee1de,0.0046875,0.0,0.0140625,0.005,0.0,0.015,0.005,0.0,0.015,0.005,0.005,0,200
+sdsd_v2_anchor_k1_100_seed42,sdsd,100,sdsd-safety-asr-sample-v3,6f6eaab041bfff06e75b136d8bfdf3bfd809dd50ce90c60d79d89e9a6147273e,0.0053125,0.0,0.015625,0.00625,0.0,0.01875,0.01,0.0,0.025,0.01,0.01,0,200
+sdsd_v2_external_k1_100_seed42,sdsd,100,sdsd-safety-asr-sample-v3,553fc3dd2ce294058e33f4a6c4d7b0975e4492384375e2136a65a3bb4206cef0,0.005,0.0,0.015,0.005,0.0,0.015,0.005,0.0,0.015,0.005,0.005,0,200
+sdsd_v2_k1_100_seed42,sdsd,100,sdsd-safety-asr-sample-v3,0107394a85db93ae9877bbf415531f66cf6d54b4a7eba203f8b782326a980c37,0.005,0.0,0.015,0.005,0.0,0.015,0.005,0.0,0.015,0.005,0.005,0,200
