@@ -181,13 +181,13 @@ x_{t+1}=(1-\eta)x_t+\eta[(1-a)(m_t+b)+a x_0],
 
 ## 7. v2 实际结果与多教师判定（2026-10-30）
 
-实际完成：19/19 回归（3 项 Torch 梯度未跳过）、数据审核/targets、Base + 8 个 100-step run、standard-200/XSTest/GSM8K。逐 run 表在 `results/tables/main.md`、`results/tables/ablations.md`，Pareto 在 `results/tables/pareto.md`。
+实际完成：26/26 回归（含 Torch 梯度与统计检查）、数据审核/targets、Base + 8 个 100-step run、standard-200/XSTest/GSM8K；逐 run 数值只在 `results/tables/main.md`、`results/tables/ablations.md`、`results/summary.json` 维护。GSM8K 主列已在看到任何重评结果前按 `docs/gsm8k_protocol.md` 切换为公开 exact scorer，旧 strict/flexible 仅作诊断。
 
-- **SFT/GRPO**：ASR 3.00%/0.50%，官方 XSTest safe refusal 19.6%/27.6%，GSM8K strict 72.0%/67.5%。提高 unsafe refusal 但严重过拒绝、损失能力，被 Base 与 SDSD 变体 Pareto 支配。
-- **SDSD K1 self**：ASR 0.50%，safe 9.2%，unsafe 82.5%，GSM8K strict 91.0%/flexible 91.0%。相对 Base（safe 5.6%，flexible 93.5%）是“略多过拒绝 + 统一格式”的权衡；它支配 OPSA、SFT、GRPO。
-- **A：EMA+frozen(0.25)**：ASR 0.50%，safe 6.8%，unsafe 79.5%，GSM8K strict 92.5%。与 K3 mean-KL 指标相同，支配 K1；多教师改善过拒绝/格式，不改善 ASR。
-- **B：K3 mean-KL vs probability-mean**：mean-KL ASR 0.50%、safe 6.8%、strict 92.5%；probability-mean ASR 1.00%、safe 7.2%、strict 91.5%。在正式三指标上 mean-KL 支配 probability-mean；算术池没有带来更好权衡。
-- **Pareto 非支配点**：Base、EMA+frozen anchor、K3 mean-KL、external K1。没有方法同时改善 ASR、过拒绝和 GSM8K。Base 的 standard-200 ASR 仅 1/200，ASR 已接近地板。
-- **能力解释**：strict GSM8K 的 +4.5～6.5 提升主要来自格式标准化（Base 21 个 strict parse failure，SDSD 1–3 个；flexible Base 93.5% 仍高于 SDSD 91.0–93.0%）。因此不能把 strict 提升写成真实数学能力提升。
+- **ASR 测量**：greedy standard-200 中 Base 仅 1/200 harmful，所有方法 0.5–3.0%。该协议没有区分力；不能据此宣布安全等价。固定请求 16-sample ASR@1/4/16 正在按 `docs/asr_protocol.md` 单独测量。
+- **SFT/GRPO**：官方 XSTest safe refusal 19.6%/27.6%，flexible GSM8K 72.0%/69.5%；安全拒绝换来严重过拒绝与能力下降。公开 exact GSM8K 均为 0.0%/42.5%，进一步说明格式敏感。
+- **SDSD K1 self**：官方 safe refusal 9.2%，unsafe 82.5%，flexible GSM8K 91.0%；公开 exact 3.0%。相对 Base（safe 5.6%，flexible 93.5%，exact 43.0%）是“略多过拒绝 + 格式服从下降”的权衡，不能称无成本。
+- **A：EMA+frozen(0.25)**：safe 6.8%，unsafe 79.5%，flexible GSM8K 92.5%，exact 3.5%；与 K3 mean-KL 的 greedy 指标相同。它们是否减少可采样有害输出尚未验证，旧 greedy ASR 不能回答。
+- **B：K3 mean-KL vs probability-mean**：greedy ASR 0.50% vs 1.00%，safe 6.8% vs 7.2%，exact 1.0% vs 0.0%，flexible 92.5% vs 91.5%；差异没有配对不确定性支持，不能据此宣称 mean-KL 占优。
+- **旧 strict 主列 Pareto 已作废**：它依赖旧 scorer 且把格式改善当成能力。新分析必须同时报告 public exact 与 flexible 诊断，明确规定主指标，并对方法差异给出 request-level 配对区间。
 
-这些结果支持：修复后 SDSD 在安全基座上的价值主要是**避免 SFT/GRPO 的过拒绝与能力损失**，以及用条件冻结锚限制漂移；在当前 Base 的 ASR 地板上，多教师蒸馏没有可测的 ASR 收益。
+这些 v2 结果只支持一个谨慎结论：拒绝型 SFT/GRPO 的过拒绝代价大，SDSD 系列在 flexible 诊断下接近 Base；公开 exact 主列显示安全适配仍付出格式服从成本。安全采样概率是否真的下降，是 Round 1 的核心测量，不能用旧 greedy ASR 代替。

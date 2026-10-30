@@ -15,7 +15,13 @@ import unittest
 
 from sdsd_safety.audit_external import qualify_candidate
 from sdsd_safety.evaluate import harmbench_rows, select_saved_rows, summary_phase
-from sdsd_safety.metrics import binary_summary, gsm8k_correct, gsm8k_diagnosis, is_refusal, wilson_interval
+from sdsd_safety.harmbench16 import classifier_inputs
+from sdsd_safety.metrics import (
+    OPENAI_GSM8K_INVALID_ANS, OPENAI_GSM8K_SCORER_ID,
+    asr_at_k_summary, binary_summary, gsm8k_correct, gsm8k_diagnosis,
+    is_refusal, openai_gsm8k_correct, openai_gsm8k_extract_answer,
+    paired_asr_difference, wilson_interval,
+)
 from sdsd_safety.prepare_data import build_splits, take, valid_normal
 from sdsd_safety.queue import build_jobs, update_status, verify_group, verify_resumed_jobs
 
@@ -145,6 +151,19 @@ class EvaluationRegressionTests(unittest.TestCase):
         self.assertTrue(gsm8k_correct("Intermediate result: 42", "#### 42", mode="flexible"))
         self.assertIsNone(gsm8k_diagnosis("#### 42", "#### 42")["hit_length_limit"])
 
+    def test_openai_public_gsm8k_extractor_is_exact_and_supersedes_primary(self):
+        self.assertEqual(OPENAI_GSM8K_SCORER_ID, "openai-grade-school-math@2909d34:extract_answer-exact-string")
+        self.assertTrue(openai_gsm8k_correct("reasoning\n#### 1,234", "work\n#### 1234"))
+        self.assertFalse(openai_gsm8k_correct("#### 42.0", "#### 42"))
+        self.assertFalse(openai_gsm8k_correct("#### $42", "#### 42"))
+        self.assertFalse(openai_gsm8k_correct("#### 84/2", "#### 42"))
+        self.assertEqual(openai_gsm8k_extract_answer("#### 42 then #### 43"), "42")
+        self.assertEqual(openai_gsm8k_extract_answer("no marker"), OPENAI_GSM8K_INVALID_ANS)
+        diagnosis = gsm8k_diagnosis("#### 42.0", "#### 42")
+        self.assertTrue(diagnosis["correct_flexible"])
+        self.assertFalse(diagnosis["correct_openai"])
+        self.assertEqual(diagnosis["prediction_openai"], "42.0")
+
     def test_standard_subset_and_saved_generation_identity(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "behaviors.csv"
@@ -181,6 +200,48 @@ class EvaluationRegressionTests(unittest.TestCase):
             self.assertIn("No completed, valid runs", (root / "results/tables/main.md").read_text())
 
 
+class SamplingStatisticsTests(unittest.TestCase):
+    def test_combinatorial_asr_endpoints_use_the_same_samples(self):
+        per_prompt = [[1] + [0] * 15, [0] * 16]
+        at1 = asr_at_k_summary(per_prompt, 1, 7, replicates=500)
+        at4 = asr_at_k_summary(per_prompt, 4, 7, replicates=500)
+        at16 = asr_at_k_summary(per_prompt, 16, 7, replicates=500)
+        self.assertAlmostEqual(at1["rate"], 0.5 * (1 / 16))
+        self.assertAlmostEqual(at4["rate"], 0.5 * (4 / 16))
+        self.assertAlmostEqual(at16["rate"], 0.5)
+        self.assertEqual(at1["n_unknown_labels"], 0)
+        self.assertEqual(at16["missing_lower_bound"], at16["missing_upper_bound"])
+
+    def test_unknown_labels_produce_bounds_not_imputation(self):
+        per_prompt = [[None] * 16, [0] * 16]
+        at1 = asr_at_k_summary(per_prompt, 1, 3, replicates=200)
+        at16 = asr_at_k_summary(per_prompt, 16, 3, replicates=200)
+        self.assertEqual(at1["rate"], 0.0)  # complete-case point, not an imputed zero
+        self.assertEqual(at1["n_complete_prompts"], 1)
+        self.assertEqual(at16["missing_lower_bound"], 0.0)
+        self.assertEqual(at16["missing_upper_bound"], 0.5)
+        self.assertEqual(at16["n_prompts_with_unknown"], 1)
+
+    def test_paired_bootstrap_is_request_aligned(self):
+        a = [[1] + [0] * 15, [1] + [0] * 15, [0] * 16, [0] * 16]
+        b = [[0] * 16, [0] * 16, [0] * 16, [0] * 16]
+        result = paired_asr_difference(a, b, 16, 11, replicates=2000)
+        self.assertEqual(result["n_paired_complete_requests"], 4)
+        self.assertEqual(result["difference"], 0.5)
+        self.assertEqual(result["direction"], "A_higher")
+        with self.assertRaises(ValueError):
+            paired_asr_difference(a, b[:-1], 16, 11, replicates=10)
+
+    def test_classifier_uses_original_behavior_not_attack_prompt(self):
+        rows = [{"behavior_id": "h1", "behavior": "original harmful behavior",
+                 "attack_prompt": "jailbreak wrapper", "responses": ["r1", "r2"]}]
+        flat = classifier_inputs(rows)
+        self.assertEqual(flat, [{"behavior": "original harmful behavior", "response": "r1"},
+                                {"behavior": "original harmful behavior", "response": "r2"}])
+        with self.assertRaises(ValueError):
+            classifier_inputs([{"behavior": "", "attack_prompt": "wrapper", "responses": ["r"]}])
+
+
 class QueueRegressionTests(unittest.TestCase):
     def test_research_jobs_keep_budget_and_change_only_selected_options(self):
         import yaml
@@ -191,6 +252,22 @@ class QueueRegressionTests(unittest.TestCase):
         self.assertTrue(any("train.frozen_teacher_weight=0.25" in job["command"] for job in training))
         self.assertTrue(any("train.demo_pooling=probability_mean" in job["command"] for job in training))
         self.assertTrue(all(job["status"] == "planned" and job["pid"] is None for job in jobs))
+
+    def test_acl_groups_extend_queue_without_rerunning_old_all_group(self):
+        import yaml
+        config = yaml.safe_load((ROOT / "configs/qwen3_4b.yaml").read_text())
+        round1 = build_jobs(config, str(ROOT / "configs/qwen3_4b.yaml"), [], "acl-round1")
+        self.assertEqual(sum(job["stage"] == "harmbench16_generate" for job in round1), 5)
+        self.assertEqual(sum(job["stage"] == "harmbench16_judge" for job in round1), 1)
+        self.assertTrue(any(job["stage"] == "analyze_asr" for job in round1))
+        round2 = build_jobs(config, str(ROOT / "configs/qwen3_4b.yaml"), [], "acl-round2")
+        train = [job for job in round2 if job["stage"] == "train"]
+        self.assertEqual(len(train), 3)
+        commands = [" ".join(job["command"]) for job in train]
+        self.assertTrue(any("train.method=sirl" in command and "train.lr=1.0e-4" in command for command in commands))
+        self.assertTrue(any("train.method=opsa" in command and "train.lr=5.0e-5" in command for command in commands))
+        self.assertTrue(any("train.frozen_teacher_demo=false" in command and "train.frozen_teacher_weight=0.25" in command for command in commands))
+        self.assertTrue(all(job["status"] == "planned" and job["pid"] is None for job in round2))
 
     def test_status_preserves_notes_and_distinguishes_blocked_from_running(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -248,6 +325,18 @@ class TorchGradientTests(unittest.TestCase):
             gradients.append(gradient[0, 0].item())
         self.assertGreater(gradients[0], 0)
         self.assertLess(gradients[1], 0)
+
+    def test_sirl_entropy_reward_is_detached_full_vocab_and_per_completion(self):
+        import math
+        import torch
+        from sdsd_safety.losses import full_vocab_entropy_rewards
+        uniform = torch.zeros(3, 4, requires_grad=True)
+        peaked = torch.tensor([[100.0, 0.0, 0.0, 0.0]] * 2, requires_grad=True)
+        rewards = full_vocab_entropy_rewards([uniform, peaked])
+        self.assertEqual(len(rewards), 2)
+        self.assertAlmostEqual(rewards[0], -math.log(4), places=6)
+        self.assertAlmostEqual(rewards[1], 0.0, places=6)
+        self.assertIsInstance(rewards[0], float)
 
     def test_arithmetic_teacher_mix_and_stop_gradient(self):
         import torch

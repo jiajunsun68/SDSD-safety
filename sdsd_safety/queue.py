@@ -37,10 +37,12 @@ def build_jobs(config: dict[str, Any], config_path: str, overrides: list[str], g
         common += ["--override", item]
     jobs: list[dict[str, Any]] = []
 
-    def add(label: str, module: str, args: list[str], **contract: Any) -> None:
+    def add(label: str, module: str, args: list[str], stage: str | None = None,
+            **contract: Any) -> None:
+        inferred = module if module != "evaluate" else args[args.index("--phase") + 1]
         jobs.append({"id": f"Q{len(jobs) + 1:02d}", "task": label,
                      "command": [python, "-m", f"sdsd_safety.{module}", *common, *args],
-                     "stage": module if module != "evaluate" else args[args.index("--phase") + 1],
+                     "stage": stage or inferred,
                      "status": "planned", "pid": None, "exit_code": None, **contract})
 
     jobs.append({"id": "Q01", "task": "Run regression and Torch gradient tests", "stage": "tests",
@@ -67,6 +69,67 @@ def build_jobs(config: dict[str, Any], config_path: str, overrides: list[str], g
     if group in {"all", "repair"}:
         add("Audit request intent and helpful answers", "audit_external", [])
         add("Verify shared refusal targets", "make_sft_targets", [])
+
+    if group in {"acl-round1", "acl-round2"}:
+        round1 = list(config["acl"]["round1_runs"])
+        samples = int(config["eval"].get("asr_samples", 16))
+        checkpoint_root = Path(config["project_root"]) / config["train"]["output_root"]
+
+        def adapter_for(run_id: str) -> str:
+            checkpoint = checkpoint_root / run_id / "checkpoint"
+            return str(checkpoint) if checkpoint.is_dir() else "none"
+
+        if group == "acl-round1":
+            for run_id in round1:
+                add(f"Generate 16-sample HarmBench for {run_id}", "harmbench16",
+                    ["--phase", "generate", "--samples", str(samples), "--run", f"{run_id}:{adapter_for(run_id)}"],
+                    stage="harmbench16_generate", run_id=run_id)
+            judge_args = ["--phase", "judge", "--samples", str(samples)]
+            for run_id in round1:
+                judge_args += ["--run", f"{run_id}:{adapter_for(run_id)}"]
+            add("Judge repeated samples with official classifier", "harmbench16", judge_args,
+                stage="harmbench16_judge", runs=round1)
+            add("Analyze paired ASR@k endpoints", "analyze_asr",
+                ["--runs", ",".join(round1), "--reference", round1[0],
+                 "--bootstrap-seed", str(config["acl"]["bootstrap_seed"]),
+                 "--bootstrap-replicates", str(config["acl"]["bootstrap_replicates"]),
+                 "--output-prefix", "asr_round1"], stage="analyze_asr", output_prefix="asr_round1")
+            add("Refresh validated tables and ledger", "evaluate", ["--phase", "summarize"], stage="summarize")
+            return jobs
+
+        round2 = list(config["acl"]["round2_runs"])
+        recipes = config["acl"]["round2_train"]
+        if set(round2) != set(recipes):
+            raise ValueError("acl.round2_runs and acl.round2_train must name the same runs")
+        for run_id in round2:
+            recipe = recipes[run_id]
+            args = ["--run-id", run_id, "--override", f"train.method={recipe['method']}"]
+            for setting in recipe.get("overrides", []):
+                args += ["--override", setting]
+            add(f"Train ACL variant {run_id}", "train", args, stage="train",
+                run_id=run_id, method=recipe["method"])
+            add(f"Generate standard benchmarks for {run_id}", "evaluate",
+                ["--phase", "generate", "--run-id", run_id, "--adapter", adapter_for(run_id)],
+                stage="generate", run_id=run_id)
+            add(f"Generate 16-sample HarmBench for {run_id}", "harmbench16",
+                ["--phase", "generate", "--samples", str(samples), "--run", f"{run_id}:{adapter_for(run_id)}"],
+                stage="harmbench16_generate", run_id=run_id)
+        add("Judge standard HarmBench for ACL variants", "evaluate",
+            ["--phase", "judge", "--runs", ",".join(round2)], stage="judge", runs=round2)
+        add("Judge XSTest over-refusal for ACL variants", "evaluate",
+            ["--phase", "judge_xstest", "--runs", ",".join(round2)], stage="judge_xstest", runs=round2)
+        judge_args = ["--phase", "judge", "--samples", str(samples)]
+        for run_id in round2:
+            judge_args += ["--run", f"{run_id}:{adapter_for(run_id)}"]
+        add("Judge repeated samples for ACL variants", "harmbench16", judge_args,
+            stage="harmbench16_judge", runs=round2)
+        add("Analyze paired ASR@k for Round 2", "analyze_asr",
+            ["--runs", ",".join(round1 + round2), "--reference", round1[0],
+             "--bootstrap-seed", str(config["acl"]["bootstrap_seed"]),
+             "--bootstrap-replicates", str(config["acl"]["bootstrap_replicates"]),
+             "--output-prefix", "asr_round2"], stage="analyze_asr", output_prefix="asr_round2")
+        add("Refresh validated tables and ledger", "evaluate", ["--phase", "summarize"], stage="summarize")
+        return jobs
 
     main = list(config["eval"]["main_runs"])
     ablations = list(config["eval"]["ablation_runs"])
@@ -162,13 +225,13 @@ def verify_manifest(config: dict[str, Any], *, targets: bool) -> dict[str, str]:
 
 
 def verify_training(config: dict[str, Any], run_id: str, method: str | None = None) -> dict[str, str]:
-    from .evaluate import TRAINING_PROTOCOL_ID, is_sha256, model_identity
+    from .evaluate import TRAINING_PROTOCOL_IDS, is_sha256, model_identity
 
     directory = Path(resolve_path(config, config["train"]["output_root"])) / run_id
     path = directory / "run.json"
     artifacts = {str(path.resolve()): checked_file(path)}
     meta = json.loads(path.read_text())
-    if (meta.get("protocol_id") != TRAINING_PROTOCOL_ID or meta.get("run_id") != run_id
+    if (meta.get("protocol_id") not in TRAINING_PROTOCOL_IDS or meta.get("run_id") != run_id
             or meta.get("status") not in {"trained", "completed"} or meta.get("training_completed") is not True
             or meta.get("valid") is not True or meta.get("data_verified") is not True):
         raise ValueError(f"{run_id}: training is not completed and verified under the repaired protocol")
@@ -252,6 +315,72 @@ def verify_evaluation(config: dict[str, Any], run_id: str, benchmark: str, *, sc
     return artifacts
 
 
+def verify_sampling(config: dict[str, Any], run_id: str, *, scored: bool) -> dict[str, str]:
+    from .evaluate import file_hash, model_identity, sampling_dir
+    from .metrics import ASR_SAMPLING_PROTOCOL_ID
+
+    directory = sampling_dir(config, run_id)
+    manifest_path = directory / "sampling_manifest.json"
+    raw_path = directory / "harmbench16.jsonl"
+    if not manifest_path.is_file() or not raw_path.is_file():
+        raise ValueError(f"{run_id}: missing repeated-sampling manifest/raw output")
+    manifest = json.loads(manifest_path.read_text())
+    artifacts = {str(manifest_path.resolve()): checked_file(manifest_path),
+                 str(raw_path.resolve()): checked_file(raw_path, manifest.get("raw_sha256"))}
+    allowed = {"generating", "generated", "completed"} if not scored else {"completed"}
+    if (manifest.get("protocol_id") != ASR_SAMPLING_PROTOCOL_ID
+            or manifest.get("status") not in allowed or manifest.get("samples") != 16
+            or manifest.get("n") != 200):
+        raise ValueError(f"{run_id}: repeated-sampling manifest is incomplete or not 200x16")
+    from .harmbench16 import SAMPLING_CODE_FILES
+
+    expected_code = {name: sha256_file(Path(__file__).parent / name) for name in SAMPLING_CODE_FILES}
+    if manifest.get("code_sha256") != expected_code:
+        raise ValueError(f"{run_id}: sampling code differs from the recorded evaluation code")
+    adapter = manifest.get("adapter_identity")
+    if adapter is not None:
+        if not Path(adapter["path"]).is_dir() or model_identity(adapter["path"], adapter=True)["sha256"] != adapter["sha256"]:
+            raise ValueError(f"{run_id}: evaluated adapter is missing or changed")
+    training = manifest.get("training_identity") or {}
+    if training.get("run_json_sha256"):
+        run_json = Path(resolve_path(config, config["train"]["output_root"])) / run_id / "run.json"
+        checked_file(run_json, training["run_json_sha256"])
+    if not scored:
+        return artifacts
+    summary_path = directory / "harmbench16_summary.json"
+    judged_path = directory / "harmbench16_judged.jsonl"
+    counts_path = directory / "harmbench16_prompt_counts.json"
+    summary = json.loads(checked_file(summary_path))
+    artifacts[str(summary_path.resolve())] = file_hash(summary_path)
+    artifacts[str(judged_path.resolve())] = checked_file(judged_path, summary.get("judged_sha256"))
+    artifacts[str(counts_path.resolve())] = checked_file(counts_path, summary.get("prompt_counts_sha256"))
+    if (summary.get("protocol_id") != ASR_SAMPLING_PROTOCOL_ID or summary.get("status") != "completed"
+            or summary.get("valid") is not True or summary.get("samples") != 16
+            or summary.get("n_behaviors") != 200
+            or set(summary.get("asr_endpoints", {})) != {"1", "4", "16"}):
+        raise ValueError(f"{run_id}: repeated-sampling scoring is incomplete")
+    if (manifest.get("status") != "completed" or manifest.get("valid") is not True
+            or manifest.get("summary_sha256") != file_hash(summary_path)
+            or manifest.get("judged_sha256") != summary.get("judged_sha256")
+            or manifest.get("prompt_counts_sha256") != summary.get("prompt_counts_sha256")):
+        raise ValueError(f"{run_id}: sampling manifest and scored artifacts disagree")
+    return artifacts
+
+
+def verify_analysis(config: dict[str, Any], prefix: str) -> dict[str, str]:
+    from .evaluate import file_hash
+
+    root = Path(config["project_root"])
+    report = root / "results" / "analysis" / f"{prefix}.json"
+    paired = root / "results" / "tables" / f"{prefix}_paired.md"
+    artifacts = {str(report.resolve()): checked_file(report),
+                 str(paired.resolve()): checked_file(paired)}
+    data = json.loads(report.read_text())
+    if data.get("protocol_id") != "sdsd-safety-asr-sample-v3" or not data.get("paired"):
+        raise ValueError("ASR analysis report lacks protocol or paired endpoints")
+    return artifacts
+
+
 def verify_job(config: dict[str, Any], job: dict[str, Any]) -> dict[str, str]:
     root, stage = Path(config["project_root"]), job["stage"]
     if stage == "tests":
@@ -265,6 +394,15 @@ def verify_job(config: dict[str, Any], job: dict[str, Any]) -> dict[str, str]:
         if not all(any(name in line and line.rstrip().endswith(" ... ok") for line in lines) for name in GRADIENT_TESTS):
             raise ValueError("The three Torch gradient/mixture tests must run and pass, not skip")
         return {str(path.resolve()): digest}
+    if stage in {"harmbench16_generate", "harmbench16_judge"}:
+        if "run_id" in job:
+            return verify_sampling(config, job["run_id"], scored=stage == "harmbench16_judge")
+        artifacts = {}
+        for run_id in job["runs"]:
+            artifacts.update(verify_sampling(config, run_id, scored=stage == "harmbench16_judge"))
+        return artifacts
+    if stage == "analyze_asr":
+        return verify_analysis(config, job["output_prefix"])
     if stage in {"audit_external", "make_sft_targets"}:
         return verify_manifest(config, targets=stage == "make_sft_targets")
     if stage == "train":
@@ -312,6 +450,26 @@ def verify_group(config: dict[str, Any], jobs: list[dict[str, Any]], group: str)
     by_id = {row["run_id"]: row for row in rows}
     if len(by_id) != len(rows):
         raise ValueError("The summary ledger contains duplicate run identities")
+    if group in {"acl-round1", "acl-round2"}:
+        for job in jobs:
+            if job["stage"] in {"generate", "train", "judge", "judge_xstest",
+                                "harmbench16_generate", "harmbench16_judge", "analyze_asr", "summarize"}:
+                verify_job(config, job)
+        sampling_runs = sorted({job["run_id"] for job in jobs if job["stage"] == "harmbench16_generate"})
+        if not sampling_runs:
+            raise ValueError("ACL group has no repeated-sampling runs")
+        for run_id in sampling_runs:
+            verify_sampling(config, run_id, scored=True)
+            row = by_id.get(run_id, {})
+            if row.get("valid") is not True:
+                raise ValueError(f"{run_id}: standard evaluation is not validated: {row.get('validation_errors', ['missing'])}")
+            if row.get("sampled_asr_at_16") is None:
+                raise ValueError(f"{run_id}: repeated-sampling endpoints are absent from the ledger")
+        if group == "acl-round2":
+            for job in jobs:
+                if job["stage"] == "train":
+                    verify_training(config, job["run_id"], job["method"])
+        return {"scope": "acl_repeated_sampling", "runs": sampling_runs}
     if group == "legacy-rejudge":
         expected = next(job["runs"] for job in jobs if job["stage"] == "judge")
         for job in jobs:
@@ -355,10 +513,15 @@ def preflight(config: dict[str, Any], gpu: str, group: str) -> list[str]:
             errors.append(f"Missing {label}: {path}")
     if shutil.which("nvidia-smi") is None:
         errors.append("No nvidia-smi/GPU is available on this host")
-    if group in {"ablations", "research"}:
+    if group in {"ablations", "research", "acl-round2"}:
         path = Path(resolve_path(config, config["data"]["manifest"]))
         if not path.is_file():
             errors.append("Run the audited data/target stages before the ablation or research group")
+    if group in {"acl-round1", "acl-round2"}:
+        for run_id in config["acl"]["round1_runs"]:
+            checkpoint = Path(config["project_root"]) / config["train"]["output_root"] / run_id / "checkpoint"
+            if run_id != "base_v2" and not checkpoint.is_dir():
+                errors.append(f"Missing frozen Round 1 checkpoint: {run_id}")
     return errors
 
 
@@ -445,7 +608,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="configs/qwen3_4b.yaml")
     parser.add_argument("--override", action="append", default=[])
-    parser.add_argument("--group", choices=["all", "repair", "ablations", "research", "legacy-rejudge"], default="repair")
+    parser.add_argument("--group", choices=["all", "repair", "ablations", "research", "legacy-rejudge",
+                                            "acl-round1", "acl-round2"], default="repair")
     parser.add_argument("--gpu", default="0")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--plan-only", action="store_true")

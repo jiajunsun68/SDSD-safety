@@ -81,12 +81,12 @@ L_{prob}=D_{KL}\!\left(p\middle\|\frac1K\sum_jq_j\right).
 |---|---|
 | HarmBench | 官方 **standard 200** 个请求、greedy direct generation、官方 Llama-2-13B standard 分类模板；这不是 all-400 或自适应攻击鲁棒性评测 |
 | XSTest | 全部 450 个请求；官方字符串拒绝率分 safe 250/unsafe 200；guard 语义拒绝单列辅助诊断 |
-| GSM8K | seed42 固定 200 题、greedy、max 512 new tokens；主列为 `####` strict numeric exact match，flexible last-number 单列 |
+| GSM8K | seed42 固定 200 题、greedy、max 512 new tokens；主列为 OpenAI grade-school-math commit `2909d34` 的公开 exact extractor；旧 strict/flexible 仅作格式诊断，见 `docs/gsm8k_protocol.md` |
 | 不确定性 | 事件率报告 Wilson 区间、有效/总数、解析失败和缺失上下界；未知标签不能当安全或成功 |
 
 尚未实现 contextual 与 copyright/hash 完整评测，配置 all-400 会拒绝执行，避免继续误报。旧 400 条输出若仍在原服务器，可按官方 ID 和原问题精确筛出 standard 200 重判，保留 legacy 身份，不能冒充修复后训练。
 
-GSM8K 同值数字、分数和小数归一化；正常礼貌开头不自动视为错误。`diagnose` 复用现有 raw 输出记录格式差异、可能截断和少量错误样本，不重新调用模型。
+公开 exact scorer 不归一化同值数字、分数或小数；旧 strict/flexible 诊断才做数值规范化。`diagnose` 复用现有 raw 输出记录格式差异、可能截断和少量错误样本，不重新调用模型。任何 scorer 变更需要新 ID 与新的 supersedes 记录，不能根据结果临时替换。
 
 ## 7. 运行身份与结果发布
 
@@ -98,28 +98,14 @@ GSM8K 同值数字、分数和小数归一化；正常礼貌开头不自动视�
 
 每个训练最多保存最新学生与 EMA adapter，不保存多代 checkpoint；无 optimizer 精确恢复。评测与机制分析复用 raw 输出；摘要推送不包含权重或完整回答。
 
-## 8. v2 实际结果（2026-10-30）
+## 8. v2 实际结果与重评（2026-10-30）
 
-原 sjj 环境完成：19/19 回归（含 3 项 Torch 梯度）、审核 13,312 候选（接受 9,041）、1,957+43 条验证 targets、2-step SDSD smoke、Base + 8 个 100-step run、standard-200/XSTest/GSM8K 评测。
+原 sjj 环境完成：26/26 回归（含 3 项 Torch 梯度、SIRL 熵奖励、ASR 统计）、审核 13,312 候选（接受 9,041）、1,957+43 条验证 targets、2-step SDSD smoke、Base + 8 个 100-step run、standard-200/XSTest/GSM8K 评测。
 
-| run | ASR % | safe↓（官方/语义） | unsafe↑（官方/语义） | GSM8K strict | flexible |
-|---|---:|---:|---:|---:|---:|
-| Base | 0.50 | 5.6 / 7.6 | 77.5 / 82.0 | 86.5 | 93.5 |
-| SFT | 3.00 | 19.6 / 20.0 | 96.0 / 94.5 | 72.0 | 72.0 |
-| GRPO | 0.50 | 27.6 / 31.6 | 99.0 / 96.5 | 67.5 | 69.5 |
-| OPSA | 0.50 | 14.4 / 16.4 | 89.5 / 87.5 | 90.0 | 92.0 |
-| SDSD K1 self | 0.50 | 9.2 / 10.0 | 82.5 / 83.0 | 91.0 | 91.0 |
-| SDSD external K1 | 0.50 | 9.6 / 12.0 | 86.0 / 86.0 | 93.0 | 93.0 |
-| SDSD EMA+frozen 0.25 K1 | 0.50 | 6.8 / 10.0 | 79.5 / 83.0 | 92.5 | 92.5 |
-| SDSD K3 mean-KL | 0.50 | 6.8 / 10.0 | 79.5 / 83.5 | 92.5 | 92.5 |
-| SDSD K3 probability-mean | 1.00 | 7.2 / 9.6 | 75.5 / 83.0 | 91.5 | 91.5 |
+v2 的 greedy ASR 全部在 0.50–3.00%，Base 只有 1/200 harmful，已经接近地板；它不能区分安全方法。XSTest 与公开 GSM8K 的完整表格以 `results/tables/main.md`、`results/tables/ablations.md`、`results/summary.json` 为唯一台账，不在方法文档重复。
 
-结论：
+GSM8K 主列在 2026-10-30 按预先写定的 [公开 extractor 协议](gsm8k_protocol.md) 重评，未重新生成模型输出。旧 summary 归档并记录 supersedes。公开 exact 分数显著低于 strict/flexible 诊断，因为模型常写 `####3` 而官方规则要求 `#### 3`；因此 exact 与 flexible 的差异主要衡量格式服从性。任何“保持能力/降低过拒绝”的结论必须同时展示两列，不能只选有利 scorer。
 
-- Base 在 standard-200 只有 1/200 harmful，ASR 已接近地板；除 SFT 的 6/200 外，其余安全方法保持 1/200（K3 probability-mean 2/200）。不能仅凭 ASR 判断方法优劣。
-- SFT/GRPO 提高 unsafe refusal（96–99%）但官方 safe refusal 达 19.6%/27.6%，GSM8K strict 降至 72.0%/67.5%；在正式三指标上被 Base 及多个 SDSD 变体支配。
-- SDSD K1 保持 ASR 0.50%，官方 safe refusal 9.2%，GSM8K strict 91.0%；在正式三指标上支配 OPSA、SFT、GRPO。
-- EMA+frozen(0.25) 与 K3 mean-KL 把 official safe refusal 降到 6.8%、strict GSM8K 92.5%，并支配 K1；两者指标相同，anchor 计算更省。K3 probability-mean 无优势（ASR 1.00%）。
-- strict GSM8K 的提升主要是格式：Base 21 个 strict parse failure、194/200 marker；SDSD 变体 1–3 个 failure、199/200 marker。Base flexible 93.5%，anchor/K3 92.5%、K1 91.0%，因此不宣称真实能力提升。
-- 多教师改善过拒绝/格式与 strict 指标，不改善 ASR；Pareto 非支配点为 Base、anchor、K3 mean-KL、external K1。
-- 单 seed、100 steps、standard-200、边界敏感样本仅 28 条；这些是当前协议下的经验结论。
+SFT/GRPO 的过拒绝（官方 safe refusal 19.6%/27.6%）和 flexible 能力下降（72.0%/69.5%）清楚；SDSD 系列官方 safe refusal 6.8–9.6%、flexible 91–93%。但在公开 exact 主列下，所有安全适配都低于 Base 的 43.0%。这意味着 v2 尚未证明安全适配不付格式服从成本；需要新采样协议和 Round 2 条件干预来分离“安全增益”“过拒绝成本”“答案格式成本”。旧 strict 主列上的 Pareto 结论已被重评 supersede，不作为论文主结论。
+
+下一步的固定请求 16-sample ASR@1/4/16 协议见 [asr_protocol.md](asr_protocol.md)；Round 2 的 OPSA lr=5e-5、SIRL 熵基线、EMA-demo+frozen-plain 控制以及 Round 3 确认计划写入 `status.md`。

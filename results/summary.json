@@ -73,9 +73,13 @@
     "xstest_safe_refusal_judge": 0.076,
     "xstest_unsafe_refusal_judge": 0.82,
     "xstest_parse_failures": 0,
+    "gsm8k_acc": 0.43,
+    "gsm8k_acc_openai": 0.43,
+    "gsm8k_scorer_id": "openai-grade-school-math@2909d34:extract_answer-exact-string",
     "gsm8k_acc_strict": 0.865,
     "gsm8k_acc_flexible": 0.935,
     "gsm8k_n": 200,
+    "gsm8k_official_parse_failures": 109,
     "gsm8k_strict_parse_failures": 21,
     "training_provenance": {
       "protocol_id": null,
@@ -1077,13 +1081,19 @@
         "source_raw_sha256": "954f812fa6e1e7d475917cae07fe28c6ac200ca20c5eebc0e27dc8f4f0899410",
         "generation_meta_sha256": "9a80332847133017ed226bec1bfe98b0b452f6e7e9f7f8f5828b96c9efa78b3d",
         "scoring": {
-          "numeric_parser": "exact-rational-v2",
-          "reported_modes": [
+          "primary_scorer_id": "openai-grade-school-math@2909d34:extract_answer-exact-string",
+          "protocol_id": "gsm8k-openai-exact-2909d34-v1",
+          "source_commit": "2909d34ef28520753df82a2234c357259d254aa8",
+          "source_url": "https://github.com/openai/grade-school-math/commit/2909d34",
+          "rule": "first regex match r'#### (\\-?[0-9\\.\\,]+)'; strip commas; exact string equality; other numeric forms not normalized",
+          "diagnostics": [
             "strict",
-            "flexible"
-          ]
+            "flexible",
+            "legacy"
+          ],
+          "diagnostic_policy": "strict/flexible remain reported as diagnostics and do not replace the public scorer"
         },
-        "completed_at": "2026-10-30 17:31:08 CST"
+        "completed_at": "2026-10-30 22:45:26 CST"
       }
     },
     "method": "base",
@@ -1097,7 +1107,7 @@
     "comparison_keys": {
       "harmbench": "e11ff844307b2b2a2dd9f39b1d781f81efad21ee0f28f42e75d4e45bdf9e0468",
       "xstest": "ba3c2ae6eddb77551d6456033deed744d008804e4c168b309aac9177ed3c8be6",
-      "gsm8k": "5b3038b60ede23fe754623f74c3643c6ed040adbf8d6d8cc6b5e55ac1198e0d0"
+      "gsm8k": "b5ae61900839277cde0909ee1ba91ddb43b7070797109697b7f1ef934c6ebb0b"
     },
     "validation_errors": [],
     "valid": true,
@@ -1178,9 +1188,13 @@
     "xstest_safe_refusal_judge": 0.316,
     "xstest_unsafe_refusal_judge": 0.965,
     "xstest_parse_failures": 0,
+    "gsm8k_acc": 0.425,
+    "gsm8k_acc_openai": 0.425,
+    "gsm8k_scorer_id": "openai-grade-school-math@2909d34:extract_answer-exact-string",
     "gsm8k_acc_strict": 0.675,
     "gsm8k_acc_flexible": 0.695,
     "gsm8k_n": 200,
+    "gsm8k_official_parse_failures": 109,
     "gsm8k_strict_parse_failures": 60,
     "training_provenance": {
       "protocol_id": "sdsd-safety-training-v2",
@@ -2371,13 +2385,19 @@
         "source_raw_sha256": "27ec32bac91ed11189f246e4f6b8a26ff9d9bac8c5f8ce0030808bbf89a30523",
         "generation_meta_sha256": "a350291a6100b5965fe65a98a1b435b9d947f244d2e49b54922c99883c75341c",
         "scoring": {
-          "numeric_parser": "exact-rational-v2",
-          "reported_modes": [
+          "primary_scorer_id": "openai-grade-school-math@2909d34:extract_answer-exact-string",
+          "protocol_id": "gsm8k-openai-exact-2909d34-v1",
+          "source_commit": "2909d34ef28520753df82a2234c357259d254aa8",
+          "source_url": "https://github.com/openai/grade-school-math/commit/2909d34",
+          "rule": "first regex match r'#### (\\-?[0-9\\.\\,]+)'; strip commas; exact string equality; other numeric forms not normalized",
+          "diagnostics": [
             "strict",
-            "flexible"
-          ]
+            "flexible",
+            "legacy"
+          ],
+          "diagnostic_policy": "strict/flexible remain reported as diagnostics and do not replace the public scorer"
         },
-        "completed_at": "2026-10-30 17:31:09 CST"
+        "completed_at": "2026-10-30 22:45:26 CST"
       }
     },
     "method": "grpo",
@@ -2391,7 +2411,7 @@
     "comparison_keys": {
       "harmbench": "e11ff844307b2b2a2dd9f39b1d781f81efad21ee0f28f42e75d4e45bdf9e0468",
       "xstest": "ba3c2ae6eddb77551d6456033deed744d008804e4c168b309aac9177ed3c8be6",
-      "gsm8k": "5b3038b60ede23fe754623f74c3643c6ed040adbf8d6d8cc6b5e55ac1198e0d0"
+      "gsm8k": "b5ae61900839277cde0909ee1ba91ddb43b7070797109697b7f1ef934c6ebb0b"
     },
     "validation_errors": [],
     "valid": true,
@@ -2472,9 +2492,13 @@
     "xstest_safe_refusal_judge": 0.164,
     "xstest_unsafe_refusal_judge": 0.875,
     "xstest_parse_failures": 0,
+    "gsm8k_acc": 0.175,
+    "gsm8k_acc_openai": 0.175,
+    "gsm8k_scorer_id": "openai-grade-school-math@2909d34:extract_answer-exact-string",
     "gsm8k_acc_strict": 0.9,
     "gsm8k_acc_flexible": 0.92,
     "gsm8k_n": 200,
+    "gsm8k_official_parse_failures": 159,
     "gsm8k_strict_parse_failures": 13,
     "training_provenance": {
       "protocol_id": "sdsd-safety-training-v2",
@@ -3663,13 +3687,19 @@
         "source_raw_sha256": "996ccd4ce2be085e2251462a54d45c95f0f978ff46e25bf9437b87c3617baf93",
         "generation_meta_sha256": "6d8a0d5bf7cdc32b03a8ebed51f772f6eee99e52b88100a0dce5132410275370",
         "scoring": {
-          "numeric_parser": "exact-rational-v2",
-          "reported_modes": [
+          "primary_scorer_id": "openai-grade-school-math@2909d34:extract_answer-exact-string",
+          "protocol_id": "gsm8k-openai-exact-2909d34-v1",
+          "source_commit": "2909d34ef28520753df82a2234c357259d254aa8",
+          "source_url": "https://github.com/openai/grade-school-math/commit/2909d34",
+          "rule": "first regex match r'#### (\\-?[0-9\\.\\,]+)'; strip commas; exact string equality; other numeric forms not normalized",
+          "diagnostics": [
             "strict",
-            "flexible"
-          ]
+            "flexible",
+            "legacy"
+          ],
+          "diagnostic_policy": "strict/flexible remain reported as diagnostics and do not replace the public scorer"
         },
-        "completed_at": "2026-10-30 17:31:09 CST"
+        "completed_at": "2026-10-30 22:45:26 CST"
       }
     },
     "method": "opsa",
@@ -3683,7 +3713,7 @@
     "comparison_keys": {
       "harmbench": "e11ff844307b2b2a2dd9f39b1d781f81efad21ee0f28f42e75d4e45bdf9e0468",
       "xstest": "ba3c2ae6eddb77551d6456033deed744d008804e4c168b309aac9177ed3c8be6",
-      "gsm8k": "5b3038b60ede23fe754623f74c3643c6ed040adbf8d6d8cc6b5e55ac1198e0d0"
+      "gsm8k": "b5ae61900839277cde0909ee1ba91ddb43b7070797109697b7f1ef934c6ebb0b"
     },
     "validation_errors": [],
     "valid": true,
@@ -3941,9 +3971,13 @@
     "xstest_safe_refusal_judge": 0.1,
     "xstest_unsafe_refusal_judge": 0.83,
     "xstest_parse_failures": 0,
+    "gsm8k_acc": 0.035,
+    "gsm8k_acc_openai": 0.035,
+    "gsm8k_scorer_id": "openai-grade-school-math@2909d34:extract_answer-exact-string",
     "gsm8k_acc_strict": 0.925,
     "gsm8k_acc_flexible": 0.925,
     "gsm8k_n": 200,
+    "gsm8k_official_parse_failures": 193,
     "gsm8k_strict_parse_failures": 3,
     "training_provenance": {
       "protocol_id": "sdsd-safety-training-v2",
@@ -5128,13 +5162,19 @@
         "source_raw_sha256": "8613e49ef40d5d68dfaa8b90774733e1ff8248e2080e8be24c851231a7c1be40",
         "generation_meta_sha256": "04396d30f5393c02939317c08583f7b01bca210377c098a72363066b57958ca6",
         "scoring": {
-          "numeric_parser": "exact-rational-v2",
-          "reported_modes": [
+          "primary_scorer_id": "openai-grade-school-math@2909d34:extract_answer-exact-string",
+          "protocol_id": "gsm8k-openai-exact-2909d34-v1",
+          "source_commit": "2909d34ef28520753df82a2234c357259d254aa8",
+          "source_url": "https://github.com/openai/grade-school-math/commit/2909d34",
+          "rule": "first regex match r'#### (\\-?[0-9\\.\\,]+)'; strip commas; exact string equality; other numeric forms not normalized",
+          "diagnostics": [
             "strict",
-            "flexible"
-          ]
+            "flexible",
+            "legacy"
+          ],
+          "diagnostic_policy": "strict/flexible remain reported as diagnostics and do not replace the public scorer"
         },
-        "completed_at": "2026-10-30 17:31:10 CST"
+        "completed_at": "2026-10-30 22:45:27 CST"
       }
     },
     "method": "sdsd",
@@ -5148,7 +5188,7 @@
     "comparison_keys": {
       "harmbench": "e11ff844307b2b2a2dd9f39b1d781f81efad21ee0f28f42e75d4e45bdf9e0468",
       "xstest": "ba3c2ae6eddb77551d6456033deed744d008804e4c168b309aac9177ed3c8be6",
-      "gsm8k": "5b3038b60ede23fe754623f74c3643c6ed040adbf8d6d8cc6b5e55ac1198e0d0"
+      "gsm8k": "b5ae61900839277cde0909ee1ba91ddb43b7070797109697b7f1ef934c6ebb0b"
     },
     "validation_errors": [],
     "valid": true,
@@ -5172,9 +5212,13 @@
     "xstest_safe_refusal_judge": 0.12,
     "xstest_unsafe_refusal_judge": 0.86,
     "xstest_parse_failures": 0,
+    "gsm8k_acc": 0.005,
+    "gsm8k_acc_openai": 0.005,
+    "gsm8k_scorer_id": "openai-grade-school-math@2909d34:extract_answer-exact-string",
     "gsm8k_acc_strict": 0.93,
     "gsm8k_acc_flexible": 0.93,
     "gsm8k_n": 200,
+    "gsm8k_official_parse_failures": 198,
     "gsm8k_strict_parse_failures": 2,
     "training_provenance": {
       "protocol_id": "sdsd-safety-training-v2",
@@ -6359,13 +6403,19 @@
         "source_raw_sha256": "bcc7acd9e12e57df056907f1affcf361e2e9bee9ab59c597706e13f2153846c4",
         "generation_meta_sha256": "cdc85abc78bce7f8c973307fff906227f67af48d8d68ded2f54c1b5ea3abc3da",
         "scoring": {
-          "numeric_parser": "exact-rational-v2",
-          "reported_modes": [
+          "primary_scorer_id": "openai-grade-school-math@2909d34:extract_answer-exact-string",
+          "protocol_id": "gsm8k-openai-exact-2909d34-v1",
+          "source_commit": "2909d34ef28520753df82a2234c357259d254aa8",
+          "source_url": "https://github.com/openai/grade-school-math/commit/2909d34",
+          "rule": "first regex match r'#### (\\-?[0-9\\.\\,]+)'; strip commas; exact string equality; other numeric forms not normalized",
+          "diagnostics": [
             "strict",
-            "flexible"
-          ]
+            "flexible",
+            "legacy"
+          ],
+          "diagnostic_policy": "strict/flexible remain reported as diagnostics and do not replace the public scorer"
         },
-        "completed_at": "2026-10-30 17:31:09 CST"
+        "completed_at": "2026-10-30 22:45:27 CST"
       }
     },
     "method": "sdsd",
@@ -6379,7 +6429,7 @@
     "comparison_keys": {
       "harmbench": "e11ff844307b2b2a2dd9f39b1d781f81efad21ee0f28f42e75d4e45bdf9e0468",
       "xstest": "ba3c2ae6eddb77551d6456033deed744d008804e4c168b309aac9177ed3c8be6",
-      "gsm8k": "5b3038b60ede23fe754623f74c3643c6ed040adbf8d6d8cc6b5e55ac1198e0d0"
+      "gsm8k": "b5ae61900839277cde0909ee1ba91ddb43b7070797109697b7f1ef934c6ebb0b"
     },
     "validation_errors": [],
     "valid": true,
@@ -6403,9 +6453,13 @@
     "xstest_safe_refusal_judge": 0.1,
     "xstest_unsafe_refusal_judge": 0.83,
     "xstest_parse_failures": 0,
+    "gsm8k_acc": 0.03,
+    "gsm8k_acc_openai": 0.03,
+    "gsm8k_scorer_id": "openai-grade-school-math@2909d34:extract_answer-exact-string",
     "gsm8k_acc_strict": 0.91,
     "gsm8k_acc_flexible": 0.91,
     "gsm8k_n": 200,
+    "gsm8k_official_parse_failures": 194,
     "gsm8k_strict_parse_failures": 3,
     "training_provenance": {
       "protocol_id": "sdsd-safety-training-v2",
@@ -7592,13 +7646,19 @@
         "source_raw_sha256": "8700dfc521a3c53efb95f2dcb1425d7fffd5c23fb5ab4f2e6a13c368baeb06a3",
         "generation_meta_sha256": "5974a1892d8aaf29bd993ca5c503f38329bee2ef3ec4707c39bc3f2ba11aad00",
         "scoring": {
-          "numeric_parser": "exact-rational-v2",
-          "reported_modes": [
+          "primary_scorer_id": "openai-grade-school-math@2909d34:extract_answer-exact-string",
+          "protocol_id": "gsm8k-openai-exact-2909d34-v1",
+          "source_commit": "2909d34ef28520753df82a2234c357259d254aa8",
+          "source_url": "https://github.com/openai/grade-school-math/commit/2909d34",
+          "rule": "first regex match r'#### (\\-?[0-9\\.\\,]+)'; strip commas; exact string equality; other numeric forms not normalized",
+          "diagnostics": [
             "strict",
-            "flexible"
-          ]
+            "flexible",
+            "legacy"
+          ],
+          "diagnostic_policy": "strict/flexible remain reported as diagnostics and do not replace the public scorer"
         },
-        "completed_at": "2026-10-30 17:31:09 CST"
+        "completed_at": "2026-10-30 22:45:27 CST"
       }
     },
     "method": "sdsd",
@@ -7612,7 +7672,7 @@
     "comparison_keys": {
       "harmbench": "e11ff844307b2b2a2dd9f39b1d781f81efad21ee0f28f42e75d4e45bdf9e0468",
       "xstest": "ba3c2ae6eddb77551d6456033deed744d008804e4c168b309aac9177ed3c8be6",
-      "gsm8k": "5b3038b60ede23fe754623f74c3643c6ed040adbf8d6d8cc6b5e55ac1198e0d0"
+      "gsm8k": "b5ae61900839277cde0909ee1ba91ddb43b7070797109697b7f1ef934c6ebb0b"
     },
     "validation_errors": [],
     "valid": true,
@@ -7634,9 +7694,13 @@
     "xstest_safe_refusal_judge": 0.096,
     "xstest_unsafe_refusal_judge": 0.83,
     "xstest_parse_failures": 0,
+    "gsm8k_acc": 0.0,
+    "gsm8k_acc_openai": 0.0,
+    "gsm8k_scorer_id": "openai-grade-school-math@2909d34:extract_answer-exact-string",
     "gsm8k_acc_strict": 0.915,
     "gsm8k_acc_flexible": 0.915,
     "gsm8k_n": 200,
+    "gsm8k_official_parse_failures": 200,
     "gsm8k_strict_parse_failures": 2,
     "training_provenance": {
       "protocol_id": "sdsd-safety-training-v2",
@@ -8827,13 +8891,19 @@
         "source_raw_sha256": "7194b08a07afa48ef9e32686c1f1d29cc7979e10d36d8bb2f4f3ae069140ab31",
         "generation_meta_sha256": "b84651525e549aa4e7c8ba176dc6a2d64106658e3aefa0e9a51133d136fdfe26",
         "scoring": {
-          "numeric_parser": "exact-rational-v2",
-          "reported_modes": [
+          "primary_scorer_id": "openai-grade-school-math@2909d34:extract_answer-exact-string",
+          "protocol_id": "gsm8k-openai-exact-2909d34-v1",
+          "source_commit": "2909d34ef28520753df82a2234c357259d254aa8",
+          "source_url": "https://github.com/openai/grade-school-math/commit/2909d34",
+          "rule": "first regex match r'#### (\\-?[0-9\\.\\,]+)'; strip commas; exact string equality; other numeric forms not normalized",
+          "diagnostics": [
             "strict",
-            "flexible"
-          ]
+            "flexible",
+            "legacy"
+          ],
+          "diagnostic_policy": "strict/flexible remain reported as diagnostics and do not replace the public scorer"
         },
-        "completed_at": "2026-10-30 17:31:10 CST"
+        "completed_at": "2026-10-30 22:45:28 CST"
       }
     },
     "method": "sdsd",
@@ -8847,7 +8917,7 @@
     "comparison_keys": {
       "harmbench": "e11ff844307b2b2a2dd9f39b1d781f81efad21ee0f28f42e75d4e45bdf9e0468",
       "xstest": "ba3c2ae6eddb77551d6456033deed744d008804e4c168b309aac9177ed3c8be6",
-      "gsm8k": "5b3038b60ede23fe754623f74c3643c6ed040adbf8d6d8cc6b5e55ac1198e0d0"
+      "gsm8k": "b5ae61900839277cde0909ee1ba91ddb43b7070797109697b7f1ef934c6ebb0b"
     },
     "validation_errors": [],
     "valid": true,
@@ -8871,9 +8941,13 @@
     "xstest_safe_refusal_judge": 0.1,
     "xstest_unsafe_refusal_judge": 0.835,
     "xstest_parse_failures": 0,
+    "gsm8k_acc": 0.01,
+    "gsm8k_acc_openai": 0.01,
+    "gsm8k_scorer_id": "openai-grade-school-math@2909d34:extract_answer-exact-string",
     "gsm8k_acc_strict": 0.925,
     "gsm8k_acc_flexible": 0.925,
     "gsm8k_n": 200,
+    "gsm8k_official_parse_failures": 198,
     "gsm8k_strict_parse_failures": 3,
     "training_provenance": {
       "protocol_id": "sdsd-safety-training-v2",
@@ -10064,13 +10138,19 @@
         "source_raw_sha256": "06560cb7772157e0ff68beb34ad0f42ceb22400367f91ef390b7f1ddff9412bd",
         "generation_meta_sha256": "8c2e7243a2b0f93869d0d598779f50eaf126ddf9047ebfb1edca78059b076ddd",
         "scoring": {
-          "numeric_parser": "exact-rational-v2",
-          "reported_modes": [
+          "primary_scorer_id": "openai-grade-school-math@2909d34:extract_answer-exact-string",
+          "protocol_id": "gsm8k-openai-exact-2909d34-v1",
+          "source_commit": "2909d34ef28520753df82a2234c357259d254aa8",
+          "source_url": "https://github.com/openai/grade-school-math/commit/2909d34",
+          "rule": "first regex match r'#### (\\-?[0-9\\.\\,]+)'; strip commas; exact string equality; other numeric forms not normalized",
+          "diagnostics": [
             "strict",
-            "flexible"
-          ]
+            "flexible",
+            "legacy"
+          ],
+          "diagnostic_policy": "strict/flexible remain reported as diagnostics and do not replace the public scorer"
         },
-        "completed_at": "2026-10-30 17:31:10 CST"
+        "completed_at": "2026-10-30 22:45:27 CST"
       }
     },
     "method": "sdsd",
@@ -10084,7 +10164,7 @@
     "comparison_keys": {
       "harmbench": "e11ff844307b2b2a2dd9f39b1d781f81efad21ee0f28f42e75d4e45bdf9e0468",
       "xstest": "ba3c2ae6eddb77551d6456033deed744d008804e4c168b309aac9177ed3c8be6",
-      "gsm8k": "5b3038b60ede23fe754623f74c3643c6ed040adbf8d6d8cc6b5e55ac1198e0d0"
+      "gsm8k": "b5ae61900839277cde0909ee1ba91ddb43b7070797109697b7f1ef934c6ebb0b"
     },
     "validation_errors": [],
     "valid": true,
@@ -10226,9 +10306,13 @@
     "xstest_safe_refusal_judge": 0.2,
     "xstest_unsafe_refusal_judge": 0.945,
     "xstest_parse_failures": 0,
+    "gsm8k_acc": 0.0,
+    "gsm8k_acc_openai": 0.0,
+    "gsm8k_scorer_id": "openai-grade-school-math@2909d34:extract_answer-exact-string",
     "gsm8k_acc_strict": 0.72,
     "gsm8k_acc_flexible": 0.72,
     "gsm8k_n": 200,
+    "gsm8k_official_parse_failures": 200,
     "gsm8k_strict_parse_failures": 45,
     "training_provenance": {
       "protocol_id": "sdsd-safety-training-v2",
@@ -11417,13 +11501,19 @@
         "source_raw_sha256": "a4609e469286d5ffddbcc88c9b22bceca40ceea82c0ef12bccc99fce58b6704e",
         "generation_meta_sha256": "d4c2cb2f4727b192954c2c24703a6de1c5214fbf509e7512f4b74e5fa63d735a",
         "scoring": {
-          "numeric_parser": "exact-rational-v2",
-          "reported_modes": [
+          "primary_scorer_id": "openai-grade-school-math@2909d34:extract_answer-exact-string",
+          "protocol_id": "gsm8k-openai-exact-2909d34-v1",
+          "source_commit": "2909d34ef28520753df82a2234c357259d254aa8",
+          "source_url": "https://github.com/openai/grade-school-math/commit/2909d34",
+          "rule": "first regex match r'#### (\\-?[0-9\\.\\,]+)'; strip commas; exact string equality; other numeric forms not normalized",
+          "diagnostics": [
             "strict",
-            "flexible"
-          ]
+            "flexible",
+            "legacy"
+          ],
+          "diagnostic_policy": "strict/flexible remain reported as diagnostics and do not replace the public scorer"
         },
-        "completed_at": "2026-10-30 17:31:08 CST"
+        "completed_at": "2026-10-30 22:45:26 CST"
       }
     },
     "method": "sft",
@@ -11437,7 +11527,7 @@
     "comparison_keys": {
       "harmbench": "e11ff844307b2b2a2dd9f39b1d781f81efad21ee0f28f42e75d4e45bdf9e0468",
       "xstest": "ba3c2ae6eddb77551d6456033deed744d008804e4c168b309aac9177ed3c8be6",
-      "gsm8k": "5b3038b60ede23fe754623f74c3643c6ed040adbf8d6d8cc6b5e55ac1198e0d0"
+      "gsm8k": "b5ae61900839277cde0909ee1ba91ddb43b7070797109697b7f1ef934c6ebb0b"
     },
     "validation_errors": [],
     "valid": true,

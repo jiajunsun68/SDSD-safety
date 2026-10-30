@@ -1,7 +1,7 @@
-"""Unified trainer for SFT, GRPO, OPSA and SDSD-Safety.
+"""Unified trainer for SFT, GRPO, OPSA, SIRL and SDSD-Safety.
 
-All four methods share the model, data split, LoRA parameterization, decoding
-settings and evaluation code.  Only the objective differs.
+All methods share the model, data split, LoRA parameterization, decoding
+settings and evaluation code. Only the objective differs.
 """
 
 from __future__ import annotations
@@ -22,7 +22,10 @@ import torch
 import yaml
 
 from .judging import Qwen3GuardJudge, judge_summary
-from .losses import gathered_logprobs, grpo_loss, mixture_teacher_log_probs, sft_loss, token_kl
+from .losses import (
+    full_vocab_entropy_rewards, gathered_logprobs, grpo_loss,
+    mixture_teacher_log_probs, sft_loss, token_kl,
+)
 from .metrics import is_refusal
 from .modeling import (
     attach_lora,
@@ -402,8 +405,11 @@ def train_onpolicy(student, teacher, tokenizer, judge, rows, config, run_dir, lo
     rng = random.Random(int(config["seed"]) + 17)
     frozen_weight = float(cfg.get("frozen_teacher_weight", 0.0))
     pooling = cfg.get("demo_pooling", "mean_kl")
+    frozen_teacher_demo = bool(cfg.get("frozen_teacher_demo", True))
     if not 0.0 <= frozen_weight <= 1.0 or pooling not in {"mean_kl", "probability_mean"}:
         raise ValueError("invalid teacher mixture or demonstration pooling configuration")
+    if method != "sdsd" and not frozen_teacher_demo:
+        raise ValueError("frozen_teacher_demo=False is only defined for SDSD")
     if method == "sdsd" and teacher is None and frozen_weight != 1.0:
         raise ValueError("an EMA component was requested but no EMA teacher was initialized")
     history = []
@@ -460,25 +466,12 @@ def train_onpolicy(student, teacher, tokenizer, judge, rows, config, run_dir, lo
         demo_total = 0
         advantages: list[float] = []
         old_logprobs: list[torch.Tensor] = []
+        entropy_reward_mean = None
 
-        if method == "grpo":
-            margins = judge.score_responses(
-                [row["prompt"] for row in flat_rows],
-                [sample["text"] for sample in flat_samples],
-            )
-            rewards = []
-            for row, margin, refusal in zip(flat_rows, margins, refusal_flags, strict=True):
-                if row["kind"] == "harmful":
-                    rewards.append(float(margin) + (float(cfg.get("grpo_harmful_refusal_bonus", 4.0)) if refusal else 0.0))
-                else:
-                    rewards.append(float(margin) - (float(cfg.get("grpo_normal_refusal_penalty", 8.0)) if refusal else 0.0))
-            for start in range(0, len(flat_rows), n):
-                group = rewards[start : start + n]
-                mean = sum(group) / len(group)
-                variance = sum((value - mean) ** 2 for value in group) / len(group)
-                std = math.sqrt(variance + 1e-6)
-                advantages.extend((value - mean) / std for value in group)
+        if method in {"grpo", "sirl"}:
             student.eval()
+            rewards: list[float] = []
+            entropy_rewards: list[float] = []
             with torch.no_grad():
                 for start in range(0, len(flat_rows), micro):
                     ids = completion_ids[start : start + micro]
@@ -487,7 +480,31 @@ def train_onpolicy(student, teacher, tokenizer, judge, rows, config, run_dir, lo
                         with_grad=False, max_prompt_tokens=int(config["data"]["max_prompt_tokens"]),
                     )
                     old_logprobs.extend(gathered_logprobs(old_logits, ids))
+                    if method == "sirl":
+                        entropy_rewards.extend(full_vocab_entropy_rewards(old_logits))
                     del old_logits
+            if method == "grpo":
+                margins = judge.score_responses(
+                    [row["prompt"] for row in flat_rows],
+                    [sample["text"] for sample in flat_samples],
+                )
+                for row, margin, refusal in zip(flat_rows, margins, refusal_flags, strict=True):
+                    if row["kind"] == "harmful":
+                        rewards.append(float(margin) + (float(cfg.get("grpo_harmful_refusal_bonus", 4.0)) if refusal else 0.0))
+                    else:
+                        rewards.append(float(margin) - (float(cfg.get("grpo_normal_refusal_penalty", 8.0)) if refusal else 0.0))
+            else:
+                if len(entropy_rewards) != len(flat_rows):
+                    raise RuntimeError("SIRL entropy reward count differs from rollouts")
+                # No guard margin, refusal bonus, or label term is added.
+                rewards = entropy_rewards
+                entropy_reward_mean = sum(entropy_rewards) / len(entropy_rewards)
+            for start in range(0, len(flat_rows), n):
+                group = rewards[start : start + n]
+                mean = sum(group) / len(group)
+                variance = sum((value - mean) ** 2 for value in group) / len(group)
+                std = math.sqrt(variance + 1e-6)
+                advantages.extend((value - mean) / std for value in group)
 
         for start in range(0, len(flat_rows), micro):
             chunk_rows = flat_rows[start : start + micro]
@@ -499,7 +516,7 @@ def train_onpolicy(student, teacher, tokenizer, judge, rows, config, run_dir, lo
                 micro_batch=min(4, len(chunk_rows)), with_grad=True,
                 max_prompt_tokens=int(config["data"]["max_prompt_tokens"]),
             )
-            if method == "grpo":
+            if method in {"grpo", "sirl"}:
                 with torch.no_grad(), student.disable_adapter():
                     ref_logits = completion_logits(
                         student, tokenizer, chunk_prompts, chunk_ids,
@@ -555,9 +572,12 @@ def train_onpolicy(student, teacher, tokenizer, judge, rows, config, run_dir, lo
                                 with_grad=False, max_prompt_tokens=int(config["data"]["max_prompt_tokens"]),
                             )
                         if teacher is None or frozen_weight > 0.0:
+                            frozen_contexts = teacher_prompts if frozen_teacher_demo else [
+                                chat_prompt(tokenizer, row["prompt"]) for row in chunk_rows
+                            ]
                             with student.disable_adapter():
                                 frozen_logits = completion_logits(
-                                    student, tokenizer, teacher_prompts, chunk_ids,
+                                    student, tokenizer, frozen_contexts, chunk_ids,
                                     with_grad=False, max_prompt_tokens=int(config["data"]["max_prompt_tokens"]),
                                 )
                         if teacher is None:
@@ -614,6 +634,9 @@ def train_onpolicy(student, teacher, tokenizer, judge, rows, config, run_dir, lo
             "seconds": time.time() - started,
         }
         record.update(extra)
+        if entropy_reward_mean is not None:
+            record["entropy_reward_mean"] = entropy_reward_mean
+            record["guard_margin_used"] = False
         history.append(record)
         record_training_step(record, student, teacher, config, run_dir)
         if step % int(cfg["log_every"]) == 0:
@@ -641,7 +664,7 @@ def main() -> None:
     config = load_config(args.config, args.override)
     cfg = config["train"]
     method = cfg["method"]
-    if method not in {"sft", "grpo", "opsa", "sdsd"}:
+    if method not in {"sft", "grpo", "opsa", "sirl", "sdsd"}:
         raise SystemExit(f"unknown method {method}")
     cfg.setdefault("demo_preference", "refusal")
     if cfg["demo_preference"] not in {"refusal", "any_safe"}:
@@ -649,6 +672,7 @@ def main() -> None:
     cfg.setdefault("normal_demo_source", "external")
     cfg.setdefault("demo_pooling", "mean_kl")
     cfg.setdefault("frozen_teacher_weight", 0.0)
+    cfg.setdefault("frozen_teacher_demo", True)
     cfg.setdefault("save_every", 50)
     cfg.setdefault("teacher_mode", "ema")
     teacher_mode = cfg.get("teacher_mode", "ema")
@@ -678,7 +702,7 @@ def main() -> None:
     logger = setup_logger(run_dir / "train.log", name=f"sdsd.{run_id}")
     (run_dir / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     update_run(
-        run_dir, protocol_id="sdsd-safety-training-v2", status="running",
+        run_dir, protocol_id="sdsd-safety-training-v3", status="running",
         training_completed=False, valid=False, run_id=run_id, method=method,
         seed=int(config["seed"]), steps_requested=int(cfg["steps"]), steps_completed=0,
         checkpoint=None, config=config, git_commit=git_commit(),
@@ -689,7 +713,11 @@ def main() -> None:
         source_config=str(Path(args.config).resolve()),
         loss_reduction="mean_supervised_token" if method == "sft" else "mean_completion_mean_token",
         policy_dropout="disabled_during_onpolicy_scoring",
-        teacher_context="reference_system_original_user_v2", optimizer_resume_supported=False,
+        teacher_context=("reference_system_original_user_v2" if cfg.get("frozen_teacher_demo", True)
+                         else "ema_demo_plus_frozen_plain_user"),
+        entropy_reward="negative_mean_full_vocabulary_entropy_detached" if method == "sirl" else None,
+        guard_margin_used=(method == "grpo"),
+        optimizer_resume_supported=False,
         **git_worktree_status(),
     )
     logger.info("run_id=%s method=%s config=%s", run_id, method, json.dumps(cfg, sort_keys=True))

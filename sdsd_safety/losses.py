@@ -71,6 +71,28 @@ def mixture_teacher_log_probs(
     return output
 
 
+def full_vocab_entropy_rewards(logits: list[torch.Tensor]) -> list[float]:
+    """Negative mean full-vocabulary entropy per completion, detached.
+
+    This is the SIRL-style intrinsic reward used as a nearest baseline. It is
+    computed from the old policy's full next-token distributions on answer
+    tokens; no safety margin, refusal bonus, or sampled-token NLL is added.
+    `logits` already contains one row per valid completion token, so padding is
+    excluded by construction. The returned floats carry no autograd graph.
+    """
+    rewards: list[float] = []
+    for row in logits:
+        if row.ndim != 2 or row.shape[0] == 0:
+            raise ValueError("entropy reward requires nonempty [tokens, vocab] logits")
+        with torch.no_grad():
+            logp = F.log_softmax(row.detach().float(), dim=-1)
+            entropy = -(logp.exp() * logp).sum(-1).mean()
+        if not bool(torch.isfinite(entropy).item()):
+            raise FloatingPointError("nonfinite full-vocabulary entropy")
+        rewards.append(-float(entropy.item()))
+    return rewards
+
+
 def gathered_logprobs(logits: list[torch.Tensor], token_ids: list[list[int]]) -> list[torch.Tensor]:
     values = []
     for row, ids in zip(logits, token_ids, strict=True):
