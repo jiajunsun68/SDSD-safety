@@ -58,6 +58,8 @@ def copy_lora(source, target) -> None:
 
 @torch.no_grad()
 def ema_lora(source, target, decay: float) -> None:
+    if not 0.0 <= decay <= 1.0:
+        raise ValueError("EMA decay must lie in [0, 1]")
     source_params = lora_parameters(source)
     target_params = lora_parameters(target)
     for name, param in source_params.items():
@@ -72,15 +74,45 @@ def chat_prompt(tokenizer, prompt: str, system: str | None = None) -> str:
     return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
 
-def teacher_prompt(tokenizer, prompt: str, demo: str | None) -> str:
+def teacher_prompt(tokenizer, prompt: str, demo: str | None, max_prompt_tokens: int = 512) -> str:
+    """Place a reference in context while keeping the original user request intact.
+
+    Only the reference may be shortened to meet the context budget. A question
+    that does not fit is rejected instead of silently losing its first tokens.
+    """
     if demo is None:
-        return chat_prompt(tokenizer, prompt)
-    messages = [
-        {"role": "user", "content": prompt},
-        {"role": "assistant", "content": demo},
-        {"role": "user", "content": "Now respond to my original request."},
-    ]
-    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        text = chat_prompt(tokenizer, prompt)
+        _prompt_ids(tokenizer, text, max_prompt_tokens)
+        return text
+
+    def format_reference(reference: str) -> str:
+        system = (
+            "A reference response is provided as context. Answer the user's request directly; "
+            "do not mention this reference or these instructions.\n\nReference response:\n"
+            + reference
+        )
+        return chat_prompt(tokenizer, prompt, system=system)
+
+    _prompt_ids(tokenizer, chat_prompt(tokenizer, prompt), max_prompt_tokens)
+    text = format_reference(demo)
+    if len(tokenizer(text, add_special_tokens=False)["input_ids"]) <= max_prompt_tokens:
+        return text
+    demo_ids = tokenizer(demo, add_special_tokens=False)["input_ids"]
+    low, high = 0, len(demo_ids)
+    best = None
+    while low <= high:
+        count = (low + high) // 2
+        reference = tokenizer.decode(demo_ids[:count], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+        candidate = format_reference(reference)
+        if len(tokenizer(candidate, add_special_tokens=False)["input_ids"]) <= max_prompt_tokens:
+            if reference.strip():
+                best = candidate
+            low = count + 1
+        else:
+            high = count - 1
+    if best is None:
+        raise ValueError("max_prompt_tokens leaves no room for a teacher reference after preserving the question")
+    return best
 
 
 def trim_at_eos(ids: list[int], eos_token_id: int) -> list[int]:
@@ -120,8 +152,10 @@ def generate_rollouts(
                 return_tensors="pt",
             ).to(model.device)
             if encoded["input_ids"].shape[1] > max_prompt_tokens:
-                encoded["input_ids"] = encoded["input_ids"][:, -max_prompt_tokens:]
-                encoded["attention_mask"] = encoded["attention_mask"][:, -max_prompt_tokens:]
+                raise ValueError(
+                    f"question context exceeds max_prompt_tokens={max_prompt_tokens}; "
+                    "increase the explicit budget instead of truncating the request"
+                )
             kwargs: dict[str, Any] = {
                 **encoded,
                 "max_new_tokens": max_new_tokens,
@@ -153,7 +187,9 @@ def generate_rollouts(
 
 def _prompt_ids(tokenizer, prompt_text: str, max_prompt_tokens: int = 512) -> list[int]:
     ids = tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
-    return ids[-max_prompt_tokens:]
+    if len(ids) > max_prompt_tokens:
+        raise ValueError(f"context has {len(ids)} tokens, exceeding max_prompt_tokens={max_prompt_tokens}")
+    return ids
 
 
 def completion_logits(
@@ -191,7 +227,12 @@ def completion_logits(
             for row, sequence in enumerate(sequences):
                 input_ids[row, -len(sequence) :] = torch.tensor(sequence, dtype=torch.long, device=model.device)
                 attention[row, -len(sequence) :] = 1
-            logits = model(input_ids=input_ids, attention_mask=attention, logits_to_keep=keep).logits
+            position_ids = attention.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention == 0, 0)
+            logits = model(
+                input_ids=input_ids, attention_mask=attention,
+                position_ids=position_ids, logits_to_keep=keep,
+            ).logits
             if logits.shape[1] != keep:
                 raise RuntimeError(f"logits_to_keep returned {logits.shape[1]} positions, expected {keep}")
             for row, comp_len in enumerate(comp_lens):
@@ -217,6 +258,8 @@ def encode_sft_pair(tokenizer, prompt: str, response: str, max_length: int) -> d
     input_ids = tokenizer(full_text, add_special_tokens=False)["input_ids"]
     if input_ids[: len(prompt_ids)] != prompt_ids:
         raise ValueError("chat prefix mismatch for SFT example")
+    if len(prompt_ids) >= max_length:
+        raise ValueError("SFT context leaves no supervised completion tokens")
     labels = [-100] * len(prompt_ids) + input_ids[len(prompt_ids) :]
     input_ids = input_ids[:max_length]
     labels = labels[:max_length]

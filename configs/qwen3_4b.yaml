@@ -8,17 +8,19 @@ model:
   lora:
     r: 32
     alpha: 64
-    dropout: 0.05
+    dropout: 0.0
     target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
 
 judge:
   path: /data4/sjj/catelogue/alignment/models/Qwen3Guard-Gen-4B
   batch_size: 32
-  max_new_tokens: 8
+  max_new_tokens: 64
 
 data:
   train: data/train.jsonl
-  sft_train: data/train_sft.jsonl
+  sft_train: data/train.jsonl
+  manifest: data/manifest.json
+  normal_candidate_multiplier: 2.0
   dev: data/dev.jsonl
   test: data/test.jsonl
   max_prompt_tokens: 512
@@ -34,36 +36,53 @@ sources:
   gsm8k_test_parquet: /home/sjj/.cache/huggingface/hub/datasets--openai--gsm8k/snapshots/740312add88f781978c0658806c59bc2815b9866/main/test-00000-of-00001.parquet
 
 split:
-  harmful_train: 3200
-  harmful_dev: 300
-  harmful_test: 300
-  normal_train: 800
-  normal_dev: 100
-  normal_test: 100
+  harmful_train: 2000
+  harmful_dev: 200
+  harmful_test: 200
+  normal_train: 2000
+  normal_dev: 200
+  normal_test: 200
+  normal_boundary_fraction: 0.25
+  min_boundary_normal_per_split: 1
 
 train:
   method: sdsd          # sft | grpo | opsa | sdsd
-  steps: 200
+  protocol_id: sdsd-safety-training-v2
+  steps: 100
   batch_prompts: 16
   num_rollouts: 4
-  lr: 1.0e-4
+  lr: 5.0e-5
   weight_decay: 0.0
   warmup_steps: 10
   grad_clip: 1.0
   temperature: 1.0
   top_p: 1.0
-  ref_kl_coef: 0.01
-  teacher_update_rate: 0.05
+  ref_kl_coef: 0.03
+  teacher_update_rate: 0.02
   num_demos: 1
-  demo_source: self     # self | external
+  demo_source: self     # self | external_refusal
+  demo_preference: refusal
+  normal_demo_source: external
+  demo_pooling: mean_kl # mean_kl | probability_mean
+  frozen_teacher_weight: 0.0
   teacher_mode: ema     # ema | frozen
   opsa_mixed_kl_weight: 0.5
   log_every: 1
+  save_every: 50
   output_root: runs
 
 eval:
+  protocol_id: sdsd-safety-standard200-v2
+  harmbench_subset: standard200
   batch_size: 32
   max_new_tokens: 192
   dev_max_rows: 400
   gsm8k_num_questions: 200
   gsm8k_max_new_tokens: 512
+  main_runs: [base_v2, sft_v2_100_seed42, grpo_v2_100_seed42, opsa_v2_100_seed42, sdsd_v2_k1_100_seed42]
+  ablation_runs: [sdsd_v2_external_k1_100_seed42, sdsd_v2_k3_logpool_100_seed42, sdsd_v2_anchor_k1_100_seed42, sdsd_v2_k3_linpool_100_seed42]
+
+execution:
+  python: /data4/sjj/catelogue/alignment/safety-component/.venv-v31/bin/python
+  min_free_gpu_mib: 30000
+  heartbeat_seconds: 60

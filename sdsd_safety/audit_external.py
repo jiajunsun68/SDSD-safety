@@ -1,187 +1,153 @@
-"""Audit and filter external safe responses before building the fixed splits.
+"""Audit request intent and response suitability before allocating fixed splits.
 
-PKU-SafeRLHF's `is_response_*_safe` label is not a Qwen3Guard label.  A pilot
-found that only ~56% of the "safe" PKU responses actually pass Qwen3Guard, which
-would corrupt both SFT targets and SDSD fallback demonstrations.  This script
-judges the whole harmful candidate pool with Qwen3Guard, keeps only Safe external
-responses, rebuilds the same fixed splits, and audits the selected normal
-targets.
+Response labels select candidates, never request intent labels. Sensitive but
+benign requests remain eligible. Refusal targets are verified in the next stage.
 """
 
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 import random
 from pathlib import Path
 from typing import Any
 
-from .judging import Qwen3GuardJudge
-from .metrics import is_refusal
 from .prepare_data import (
-    dedup,
-    load_alpaca,
-    load_eval_prompts,
-    load_pku,
-    normalize,
-    take,
-    valid_harmful,
-    valid_normal,
+    HARMFUL_RE, build_splits, dedup, load_alpaca, load_eval_prompts, load_pku,
+    normalize, valid_harmful, valid_normal,
 )
 from .utils import load_config, now_cst, resolve_path, sha256_file, write_json, write_jsonl
 
+PROTOCOL = "prompt-intent-v2"
+
+
+def qualify_candidate(row: dict[str, Any], prompt_judgment: dict[str, Any],
+                      response_judgment: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    """Convert audited labels without inferring request intent from an answer."""
+    intent = prompt_judgment.get("safety")
+    if intent not in {"Safe", "Unsafe"}:
+        return None, "request_ambiguous_or_unparsed"
+    if response_judgment.get("safety") != "Safe":
+        return None, "external_response_not_verified_safe"
+    kind = "normal" if intent == "Safe" else "harmful"
+    refusal = response_judgment.get("refusal")
+    if kind == "normal" and refusal is not False:
+        return None, "normal_response_refusing_or_unparsed"
+    item = dict(row)
+    item.update(kind=kind, prompt_safety=intent, external_safety="Safe",
+                external_refusal=refusal, prompt_audit_protocol=PROTOCOL,
+                boundary_normal=kind == "normal" and bool(HARMFUL_RE.search(row["prompt"])))
+    return item, "accepted"
+
+
+def candidate_pool(config: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    minimum = int(config["data"]["min_response_chars"])
+    pku = dedup([r for r in load_pku(resolve_path(config, config["sources"]["pku_train_arrow"]))
+                 if valid_harmful(r, minimum)])
+    alpaca = dedup([r for r in load_alpaca(resolve_path(config, config["sources"]["alpaca_json"]))
+                   if valid_normal(r, minimum)])
+    forbidden = load_eval_prompts(config)
+    pku = [r for r in pku if normalize(r["prompt"]) not in forbidden]
+    alpaca = [r for r in alpaca if normalize(r["prompt"]) not in forbidden]
+    rng = random.Random(int(config["seed"]) + 7)
+    boundary = [r for r in alpaca if HARMFUL_RE.search(r["prompt"])]
+    ordinary = [r for r in alpaca if not HARMFUL_RE.search(r["prompt"])]
+    rng.shuffle(boundary)
+    rng.shuffle(ordinary)
+    required = sum(int(config["split"][f"normal_{s}"]) for s in ("train", "dev", "test"))
+    budget = max(required, round(required * float(config["data"].get("normal_candidate_multiplier", 2.0))))
+    chosen_boundary = boundary[: min(len(boundary), budget // 2)]
+    selected = chosen_boundary + ordinary[: budget - len(chosen_boundary)]
+    rows = dedup(pku + selected)
+    return rows, {"pku_candidates": len(pku), "alpaca_candidates": len(selected),
+                  "alpaca_sensitive_candidates": len(chosen_boundary), "total": len(rows),
+                  "exact_benchmark_exclusions": ["HarmBench", "XSTest", "GSM8K"]}
+
+
+def run_audit(config: dict[str, Any], batch_size: int) -> dict[str, Any]:
+    from .judging import Qwen3GuardJudge
+
+    root = Path(config["project_root"])
+    manifest_path = Path(resolve_path(config, config["data"].get("manifest", "data/manifest.json")))
+    manifest: dict[str, Any] = {
+        "protocol_id": PROTOCOL, "created_at": now_cst(), "seed": int(config["seed"]),
+        "prompt_audit": {"protocol": PROTOCOL, "completed": False},
+        "targets": {"completed": False}, "status": "running",
+    }
+    write_json(manifest_path, manifest)
+    try:
+        candidates, counts = candidate_pool(config)
+        judge = Qwen3GuardJudge(config["judge"]["path"], batch_size=batch_size,
+                                max_new_tokens=min(32, max(16, int(config["judge"]["max_new_tokens"]))))
+        kept: list[dict[str, Any]] = []
+        audit_rows: list[dict[str, Any]] = []
+        reasons: Counter = Counter()
+        for start in range(0, len(candidates), batch_size):
+            chunk = candidates[start : start + batch_size]
+            prompts = [r["prompt"] for r in chunk]
+            pjudgments = judge.judge_prompts(prompts)
+            rjudgments = judge.judge_responses(prompts, [r["external_response"] for r in chunk])
+            for row, pj, rj in zip(chunk, pjudgments, rjudgments, strict=True):
+                qualified, reason = qualify_candidate(row, pj, rj)
+                reasons[reason] += 1
+                if qualified is not None:
+                    kept.append(qualified)
+                audit_rows.append({"id": row["id"], "source": row["source"],
+                                   "request_safety": pj.get("safety"),
+                                   "response_safety": rj.get("safety"),
+                                   "response_refusal": rj.get("refusal"), "decision": reason})
+            print(f"audited {min(start + batch_size, len(candidates))}/{len(candidates)} requests and responses", flush=True)
+        write_jsonl(root / "data" / "external_audit.jsonl", audit_rows)
+        harmful = [r for r in kept if r["kind"] == "harmful"]
+        normal = [r for r in kept if r["kind"] == "normal"]
+        splits = build_splits(config, harmful, normal)
+        minimum_boundary = int(config["split"].get("min_boundary_normal_per_split", 1))
+        for name, rows in splits.items():
+            found = sum(bool(r.get("boundary_normal")) for r in rows)
+            if found < min(minimum_boundary, int(config["split"][f"normal_{name}"])):
+                raise RuntimeError(f"{name}: only {found} verified sensitive-but-benign examples; "
+                                   "expand the local candidate pool before training")
+        files, split_counts = {}, {}
+        for name, rows in splits.items():
+            path = Path(resolve_path(config, config["data"][name]))
+            write_jsonl(path, rows)
+            files[name] = {"path": str(path), "sha256": sha256_file(path)}
+            split_counts[name] = {"total": len(rows),
+                                  "harmful": sum(r["kind"] == "harmful" for r in rows),
+                                  "normal": sum(r["kind"] == "normal" for r in rows),
+                                  "boundary_normal": sum(bool(r.get("boundary_normal")) for r in rows)}
+        source_hashes = {
+            key: {"path": resolve_path(config, config["sources"][key]),
+                  "sha256": sha256_file(resolve_path(config, config["sources"][key]))}
+            for key in ("pku_train_arrow", "alpaca_json", "xstest_csv", "harmbench_csv", "gsm8k_test_parquet")
+        }
+        manifest.update(status="audited_pending_targets", files=files, counts=split_counts,
+                        sources=source_hashes, candidates=counts, exclusion_counts=dict(reasons),
+                        prompt_audit={"protocol": PROTOCOL, "completed": True,
+                                      "judge_path": config["judge"]["path"],
+                                      "harmful_accepted": len(harmful), "normal_accepted": len(normal),
+                                      "note": "Automated intent labels; ambiguous/unparsed requests excluded."})
+        write_json(manifest_path, manifest)
+        return manifest
+    except Exception as error:
+        manifest.update(status="failed", error=f"{type(error).__name__}: {error}")
+        manifest["prompt_audit"]["completed"] = False
+        write_json(manifest_path, manifest)
+        raise
+
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="configs/qwen3_4b.yaml")
-    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--override", action="append", default=[])
+    parser.add_argument("--batch-size", type=int, default=128)
     args = parser.parse_args()
-    config = load_config(args.config)
-    seed = int(config["seed"])
-    min_response_chars = int(config["data"]["min_response_chars"])
-    rng = random.Random(seed)
-
-    pku_rows = dedup(
-        [
-            row
-            for row in load_pku(resolve_path(config, config["sources"]["pku_train_arrow"]))
-            if valid_harmful(row, min_response_chars)
-        ]
-    )
-    alpaca_rows = dedup(
-        [
-            row
-            for row in load_alpaca(resolve_path(config, config["sources"]["alpaca_json"]))
-            if valid_normal(row, min_response_chars)
-        ]
-    )
-    eval_prompts = load_eval_prompts(config)
-    pku_rows = [row for row in pku_rows if normalize(row["prompt"]) not in eval_prompts]
-    alpaca_rows = [row for row in alpaca_rows if normalize(row["prompt"]) not in eval_prompts]
-
-    judge = Qwen3GuardJudge(
-        config["judge"]["path"],
-        batch_size=args.batch_size,
-        max_new_tokens=int(config["judge"]["max_new_tokens"]),
-    )
-    prompts = [row["prompt"] for row in pku_rows]
-    responses = [row["external_response"] for row in pku_rows]
-    judgments = []
-    for start in range(0, len(prompts), args.batch_size):
-        judgments.extend(judge.judge_responses(prompts[start : start + args.batch_size], responses[start : start + args.batch_size]))
-        print(f"judged harmful external {len(judgments)}/{len(prompts)}", flush=True)
-    audit_rows = []
-    kept_harmful = []
-    for row, judgment in zip(pku_rows, judgments, strict=True):
-        audit_rows.append(
-            {
-                "id": row["id"],
-                "kind": row["kind"],
-                "safety": judgment["safety"],
-                "refusal": judgment["refusal"],
-            }
-        )
-        if judgment["safety"] == "Safe":
-            row = dict(row)
-            row["external_safety"] = "Safe"
-            kept_harmful.append(row)
-    write_jsonl(Path(config["project_root"]) / "data" / "external_audit_harmful.jsonl", audit_rows)
-
-    split_cfg = config["split"]
-    harmful_train = take(kept_harmful, split_cfg["harmful_train"], rng, set(), "train")
-    forbidden = {normalize(row["prompt"]) for row in harmful_train}
-    harmful_dev = take(kept_harmful, split_cfg["harmful_dev"], rng, forbidden, "dev")
-    forbidden |= {normalize(row["prompt"]) for row in harmful_dev}
-    harmful_test = take(kept_harmful, split_cfg["harmful_test"], rng, forbidden, "test")
-
-    forbidden = {normalize(row["prompt"]) for row in harmful_train + harmful_dev + harmful_test}
-    normal_candidates = take(
-        alpaca_rows,
-        split_cfg["normal_train"] + split_cfg["normal_dev"] + split_cfg["normal_test"] + 300,
-        random.Random(seed + 7),
-        forbidden,
-        "candidate",
-    )
-    normal_judgments = []
-    for start in range(0, len(normal_candidates), args.batch_size):
-        chunk = normal_candidates[start : start + args.batch_size]
-        normal_judgments.extend(
-            judge.judge_responses(
-                [row["prompt"] for row in chunk],
-                [row["external_response"] for row in chunk],
-            )
-        )
-        print(f"judged normal external {len(normal_judgments)}/{len(normal_candidates)}", flush=True)
-    safe_normal = []
-    unsafe_normal = 0
-    for row, judgment in zip(normal_candidates, normal_judgments, strict=True):
-        audit_rows.append(
-            {
-                "id": row["id"],
-                "kind": row["kind"],
-                "safety": judgment["safety"],
-                "refusal": judgment["refusal"],
-                "text_refusal": is_refusal(row["external_response"]),
-            }
-        )
-        if judgment["safety"] == "Safe" and not is_refusal(row["external_response"]):
-            row = dict(row)
-            row["external_safety"] = "Safe"
-            safe_normal.append(row)
-        else:
-            unsafe_normal += 1
-    write_jsonl(Path(config["project_root"]) / "data" / "external_audit.jsonl", audit_rows)
-
-    normal_rng = random.Random(seed + 11)
-    normal_train = take(safe_normal, split_cfg["normal_train"], normal_rng, set(), "train")
-    normal_forbidden = {normalize(row["prompt"]) for row in normal_train}
-    normal_dev = take(safe_normal, split_cfg["normal_dev"], normal_rng, normal_forbidden, "dev")
-    normal_forbidden |= {normalize(row["prompt"]) for row in normal_dev}
-    normal_test = take(safe_normal, split_cfg["normal_test"], normal_rng, normal_forbidden, "test")
-
-    train = harmful_train + normal_train
-    dev = harmful_dev + normal_dev
-    test = harmful_test + normal_test
-    rng.shuffle(train)
-    rng.shuffle(dev)
-    rng.shuffle(test)
-    root = Path(config["project_root"])
-    paths = {
-        "train": root / config["data"]["train"],
-        "dev": root / config["data"]["dev"],
-        "test": root / config["data"]["test"],
-    }
-    write_jsonl(paths["train"], train)
-    write_jsonl(paths["dev"], dev)
-    write_jsonl(paths["test"], test)
-    manifest = {
-        "created_at": now_cst(),
-        "seed": seed,
-        "sources": {
-            "pku_train_arrow": config["sources"]["pku_train_arrow"],
-            "alpaca_json": config["sources"]["alpaca_json"],
-        },
-        "external_audit": {
-            "judge": config["judge"]["path"],
-            "harmful_candidates": len(pku_rows),
-            "harmful_kept_safe": len(kept_harmful),
-            "harmful_keep_rate": len(kept_harmful) / max(len(pku_rows), 1),
-            "normal_checked": len(normal_candidates),
-            "normal_unsafe_or_refusal": unsafe_normal,
-        },
-        "counts": {
-            "train": {"total": len(train), "harmful": len(harmful_train), "normal": len(normal_train)},
-            "dev": {"total": len(dev), "harmful": len(harmful_dev), "normal": len(normal_dev)},
-            "test": {"total": len(test), "harmful": len(harmful_test), "normal": len(normal_test)},
-        },
-        "files": {
-            name: {"path": str(path), "sha256": sha256_file(path)}
-            for name, path in paths.items()
-        },
-    }
-    write_json(root / "data" / "manifest.json", manifest)
-    print(json.dumps(manifest["external_audit"], indent=2))
-    print(json.dumps(manifest["counts"], indent=2))
+    if args.batch_size <= 0:
+        parser.error("--batch-size must be positive")
+    config = load_config(args.config, args.override)
+    manifest = run_audit(config, args.batch_size)
+    print(json.dumps({"status": manifest["status"], "counts": manifest["counts"]}, indent=2))
 
 
 if __name__ == "__main__":

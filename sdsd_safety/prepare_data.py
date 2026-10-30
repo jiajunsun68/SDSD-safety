@@ -1,17 +1,16 @@
-"""Build the fixed SDSD-Safety training/dev/test splits.
+"""Shared candidate loading and audited, disjoint training/dev/test splits.
 
-Risk prompts come from PKU-SafeRLHF-30K.  We keep prompts for which exactly one
-of the two recorded responses is labelled safe, and use that safe response as the
-external demonstration.  Normal prompts and responses come from alpaca-cleaned.
+Candidates come from PKU-SafeRLHF-30K and alpaca-cleaned. For PKU, exactly one
+recorded response must be labelled safe to be proposed as an external target.
+Both sources require independent request-intent and response auditing.
 
-The evaluation benchmarks (HarmBench, XSTest, GSM8K) are never used for
-training; exact prompt matches against HarmBench/XSTest are removed from the
-training pools as a leakage guard.
+Response safety labels select candidate answers, never request intent labels.
+Run this module (or audit_external) to classify requests before making splits.
+Sensitive keywords mark boundary coverage; they do not reject normal requests.
 """
 
 from __future__ import annotations
 
-import argparse
 import csv
 import json
 import random
@@ -19,7 +18,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .utils import load_config, now_cst, resolve_path, sha256_file, sha256_text, write_json, write_jsonl
+from .utils import resolve_path
 
 HARMFUL_RE = re.compile(
     r"\b(bomb|explosive|weapon|poison|nerve agent|meth|heroin|cocaine|suicide|self[- ]harm|"
@@ -60,7 +59,7 @@ def load_pku(path: str) -> list[dict[str, Any]]:
             {
                 "id": f"pku-train-{index:06d}",
                 "prompt": prompt,
-                "kind": "harmful",
+                "kind": "unverified",
                 "external_response": response,
                 "source": "PKU-SafeRLHF-30K",
             }
@@ -82,7 +81,7 @@ def load_alpaca(path: str) -> list[dict[str, Any]]:
             {
                 "id": f"alpaca-train-{index:06d}",
                 "prompt": prompt,
-                "kind": "normal",
+                "kind": "unverified",
                 "external_response": output,
                 "source": "alpaca-cleaned",
             }
@@ -98,6 +97,13 @@ def load_eval_prompts(config: dict[str, Any]) -> set[str]:
     with open(resolve_path(config, config["sources"]["harmbench_csv"]), newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
             prompts.add(normalize(row["Behavior"]))
+    # Compare raw questions, not the evaluation-only answer-format suffix.
+    gsm_path = config["sources"].get("gsm8k_test_parquet")
+    if gsm_path:
+        import pandas as pd
+
+        frame = pd.read_parquet(resolve_path(config, gsm_path), columns=["question"])
+        prompts.update(normalize(str(question)) for question in frame["question"])
     return prompts
 
 
@@ -117,7 +123,6 @@ def valid_normal(row: dict[str, Any], min_response_chars: int) -> bool:
     return (
         10 <= len(prompt) <= 800
         and min_response_chars <= len(response) <= 4000
-        and not HARMFUL_RE.search(prompt)
         and not REFUSAL_RE.match(response)
     )
 
@@ -141,6 +146,10 @@ def take(
     forbidden: set[str],
     split_name: str,
 ) -> list[dict[str, Any]]:
+    if count < 0:
+        raise ValueError("split size must be nonnegative")
+    if count == 0:
+        return []
     rng.shuffle(rows)
     chosen = []
     for row in rows:
@@ -156,92 +165,60 @@ def take(
     return chosen
 
 
-def build(config: dict[str, Any]) -> dict[str, Any]:
-    seed = int(config["seed"])
-    split_cfg = config["split"]
-    min_response_chars = int(config["data"]["min_response_chars"])
-    rng = random.Random(seed)
+def build_splits(config: dict[str, Any], harmful: list[dict[str, Any]], normal: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Allocate each verified prompt once; retain sensitive-but-benign examples.
 
-    pku_rows = load_pku(resolve_path(config, config["sources"]["pku_train_arrow"]))
-    alpaca_rows = load_alpaca(resolve_path(config, config["sources"]["alpaca_json"]))
-    pku_rows = dedup([row for row in pku_rows if valid_harmful(row, min_response_chars)])
-    alpaca_rows = dedup([row for row in alpaca_rows if valid_normal(row, min_response_chars)])
-
-    eval_prompts = load_eval_prompts(config)
-    pku_rows = [row for row in pku_rows if normalize(row["prompt"]) not in eval_prompts]
-    alpaca_rows = [row for row in alpaca_rows if normalize(row["prompt"]) not in eval_prompts]
-
-    harmful_train = take(pku_rows, split_cfg["harmful_train"], rng, set(), "train")
-    forbidden = {normalize(row["prompt"]) for row in harmful_train}
-    harmful_dev = take(pku_rows, split_cfg["harmful_dev"], rng, forbidden, "dev")
-    forbidden |= {normalize(row["prompt"]) for row in harmful_dev}
-    harmful_test = take(pku_rows, split_cfg["harmful_test"], rng, forbidden, "test")
-
-    forbidden = {normalize(row["prompt"]) for row in harmful_train + harmful_dev + harmful_test}
-    normal_train = take(alpaca_rows, split_cfg["normal_train"], rng, forbidden, "train")
-    forbidden |= {normalize(row["prompt"]) for row in normal_train}
-    normal_dev = take(alpaca_rows, split_cfg["normal_dev"], rng, forbidden, "dev")
-    forbidden |= {normalize(row["prompt"]) for row in normal_dev}
-    normal_test = take(alpaca_rows, split_cfg["normal_test"], rng, forbidden, "test")
-
-    train = harmful_train + normal_train
-    dev = harmful_dev + normal_dev
-    test = harmful_test + normal_test
-    rng.shuffle(train)
-    rng.shuffle(dev)
-    rng.shuffle(test)
-
-    root = Path(config["project_root"])
-    paths = {
-        "train": root / config["data"]["train"],
-        "dev": root / config["data"]["dev"],
-        "test": root / config["data"]["test"],
-    }
-    write_jsonl(paths["train"], train)
-    write_jsonl(paths["dev"], dev)
-    write_jsonl(paths["test"], test)
-
-    manifest = {
-        "created_at": now_cst(),
-        "seed": seed,
-        "sources": {
-            "pku_train_arrow": config["sources"]["pku_train_arrow"],
-            "alpaca_json": config["sources"]["alpaca_json"],
-        },
-        "filters": {
-            "harmful": "exactly one response safe; use the safe response as external demo",
-            "normal": "alpaca instruction/output; keyword risk filter; non-refusal output",
-            "min_response_chars": min_response_chars,
-            "eval_prompt_leakage_guard": ["HarmBench", "XSTest"],
-        },
-        "counts": {
-            "pku_pool": len(pku_rows),
-            "alpaca_pool": len(alpaca_rows),
-            "train": {"total": len(train), "harmful": len(harmful_train), "normal": len(normal_train)},
-            "dev": {"total": len(dev), "harmful": len(harmful_dev), "normal": len(normal_dev)},
-            "test": {"total": len(test), "harmful": len(harmful_test), "normal": len(normal_test)},
-        },
-        "files": {
-            name: {
-                "path": str(path),
-                "sha256": sha256_file(path),
-                "prompt_sha256": sha256_text("\n".join(row["prompt"] for row in rows)),
-            }
-            for (name, path), rows in zip(paths.items(), (train, dev, test))
-        },
-    }
-    write_json(root / "data" / "manifest.json", manifest)
-    return manifest
+    Boundary coverage is descriptive. A keyword does not establish harmlessness;
+    every input to this function must already have a prompt-level judgment.
+    """
+    rng = random.Random(int(config["seed"]))
+    share = float(config["split"].get("normal_boundary_fraction", 0.25))
+    if not 0.0 <= share <= 1.0:
+        raise ValueError("normal_boundary_fraction must be between 0 and 1")
+    for kind, rows in (("harmful", harmful), ("normal", normal)):
+        expected = "Unsafe" if kind == "harmful" else "Safe"
+        if any(row.get("kind") != kind or row.get("prompt_safety") != expected for row in rows):
+            raise ValueError("build_splits requires audited request-intent labels")
+    pools = {"harmful": dedup(harmful), "normal": dedup(normal)}
+    forbidden: set[str] = set()
+    splits = {}
+    names = ("train", "dev", "test")
+    minimum = int(config["split"].get("min_boundary_normal_per_split", 1))
+    if minimum < 0:
+        raise ValueError("min_boundary_normal_per_split cannot be negative")
+    for index, name in enumerate(names):
+        bad = take(pools["harmful"], int(config["split"][f"harmful_{name}"]), rng, forbidden, name)
+        forbidden.update(normalize(row["prompt"]) for row in bad)
+        count = int(config["split"][f"normal_{name}"])
+        boundary = [row for row in pools["normal"] if row.get("boundary_normal") and normalize(row["prompt"]) not in forbidden]
+        required_here = min(minimum, count)
+        reserve = sum(min(minimum, int(config["split"][f"normal_{later}"])) for later in names[index + 1:])
+        if len(boundary) < required_here + reserve:
+            raise ValueError("not enough verified boundary examples to cover all requested splits")
+        requested = max(required_here, round(count * share))
+        preferred = take(boundary, min(requested, len(boundary) - reserve), rng, forbidden, name)
+        forbidden.update(normalize(row["prompt"]) for row in preferred)
+        ordinary = [row for row in pools["normal"] if not row.get("boundary_normal") and normalize(row["prompt"]) not in forbidden]
+        rest = take(ordinary, min(count - len(preferred), len(ordinary)), rng, forbidden, name)
+        forbidden.update(normalize(row["prompt"]) for row in rest)
+        missing = count - len(preferred) - len(rest)
+        remaining_boundary = [row for row in boundary if normalize(row["prompt"]) not in forbidden]
+        if missing > len(remaining_boundary) - reserve:
+            raise ValueError(f"{name}: insufficient verified normal examples while reserving later split coverage")
+        extra = take(remaining_boundary, missing, rng, forbidden, name)
+        forbidden.update(normalize(row["prompt"]) for row in extra)
+        combined = bad + preferred + rest + extra
+        rng.shuffle(combined)
+        splits[name] = combined
+    return splits
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/qwen3_4b.yaml")
-    parser.add_argument("--override", action="append", default=[])
-    args = parser.parse_args()
-    config = load_config(args.config, args.override)
-    manifest = build(config)
-    print(json.dumps(manifest["counts"], indent=2))
+    # One audited pipeline; an unaudited prepare_data shortcut must not make a
+    # training-ready manifest with request labels inferred from response labels.
+    from .audit_external import main as audit_main
+
+    audit_main()
 
 
 if __name__ == "__main__":

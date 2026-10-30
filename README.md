@@ -1,175 +1,95 @@
 # SDSD-Safety
 
-On-policy self-distillation with sampled demonstrations for LLM safety
-alignment. The project adapts SDSD (Nicolicioiu et al., 2026) to safety: the
-student samples multiple rollouts, a local Qwen3Guard judge selects qualified
-safe rollouts as teacher demonstrations, and a frozen-reference/EMA teacher
-provides token-level reverse-KL supervision on the student's own prefixes.
+将 SDSD 的示范条件自蒸馏用于安全对齐，并检验如何减少拒绝向正常任务的泛化。算法基础来自 [SDSD](https://arxiv.org/abs/2606.26091)；本项目的安全资格规则、条件教师组合和实验协议见 [方法说明](docs/method.md)，多教师与跨领域研究见 [研究记录](docs/research.md)。
 
-Progress and the live task queue are in [`status.md`](status.md). Method details
-and the exact safety adaptation are in [`docs/method.md`](docs/method.md).
+## 当前结果状态
 
-## Main comparison
+**已修复已发现的实现和评测问题，尚未获得 v2 的真实模型实验结果。** 修复工作区没有 GPU、原训练环境、模型、原始生成记录或数据缓存；当前 GitHub 连接仅允许读取。不能把本地回归测试、构造分布示例或历史分数当作重新训练后的结果。
 
-All methods use the same backbone (`Qwen/Qwen3-4B-Instruct-2507`), training
-prompts, LoRA parameterization, random seed, decoding settings, and evaluators:
+- 历史数值完整保存在 [`results/legacy_0c455fd.json`](results/legacy_0c455fd.json)，附原提交、文件哈希和失效原因。原始数据没有被改成更好的分数。
+- [`results/summary.json`](results/summary.json) 是运行状态和结果台账，缺失、失败、旧协议运行明确标记为无效。
+- [`results/tables/main.md`](results/tables/main.md) 和 [`results/tables/ablations.md`](results/tables/ablations.md) 只接收完整、有效且可比较的 v2 运行，目前为空。
+- [`status.md`](status.md) 显示当前阻塞条件和真实队列状态；`planned`/`blocked` 不表示后台正在训练。
 
-| Method | Training signal |
+## 已修复的问题
+
+| 环节 | v2 行为 |
 |---|---|
-| Base | no update |
-| SFT | external safe/helpful responses, assistant-token cross-entropy |
-| GRPO | group-normalized continuous Qwen3Guard safety margin |
-| OPSA | frozen base teacher with type-conditional safety system prompts, on-policy mixed KL |
-| SDSD-Safety | EMA teacher conditioned on sampled qualified safe demonstrations, on-policy reverse KL |
+| 数据 | 分别审核请求意图、回答安全性和拒绝性；保留合法敏感请求；所有方法共用审核后的数据与 SFT targets |
+| 训练采样 | 每批 8 条有害、8 条正常请求；train/dev/test 按请求去重，排除三个评测集的精确文本重复 |
+| GRPO | 使用完整词表的真实 reverse KL；reference 改变时正则梯度随之改变 |
+| 示范 | 有害请求严格使用已验证拒绝；正常请求默认使用已验证非拒绝的外部回答；自采文本去重 |
+| 上下文与优化 | 保留原问题，只截短参考示范；统一 on-policy dropout 状态；实际执行 warmup；按 completion 归一化 |
+| 多教师 | 可选同一示范条件下的 EMA/冻结基础模型概率混合；可选跨示范概率平均，避免与平均多个 KL 混淆 |
+| HarmBench | 明确评测官方 standard 200，使用原样官方分类器模板；尚不支持把 contextual/copyright 当 standard 的 all-400 |
+| XSTest/GSM8K | 官方字符串拒绝指标为主，语义拒绝单列；GSM8K strict/flexible 数字解析分开，等价数字正确匹配 |
+| 记录与队列 | 记录实际配置、数据/代码/模型/输出身份、步骤、种子、PID、退出码；缺失结果不补零、不猜步骤 |
 
-Reported metrics: HarmBench official ASR (official Llama-2-13B classifier),
-XSTest safe/unsafe refusal rates (official string matching), and GSM8K
-exact-match accuracy.
+这轮修复会改变数据和训练行为，因此旧 checkpoint 重新评分只用于诊断；主对照需要重新训练。
 
-## Environment
+## 固定的小规模实验
 
-The machine already provides a working training environment; no large wheel was
-installed for this project.
+统一 backbone 为本地 `Qwen3-4B-Instruct-2507`，LoRA r=32、alpha=64、dropout=0；种子 42、100 次更新、每次 16 个请求。on-policy 方法每个请求生成 4 条、最多 128 tokens。SFT 的监督 token 数与 on-policy 计算量不同；100 次更新是共同预算约束，不代表相同 FLOPs。
 
-```bash
-PY=/data4/sjj/catelogue/alignment/safety-component/.venv-v31/bin/python
-# Python 3.11.15, torch 2.5.1+cu121, transformers 5.8.0, peft 0.19.1, datasets 4.8.5
-```
+| 组 | 运行 | 用途 |
+|---|---|---|
+| `repair` | Base、SFT、GRPO、OPSA、SDSD K=1 | 修复后主对照，包含重新审核数据和 targets |
+| `ablations` | SDSD 外部拒绝 K=1；SDSD K=3 mean-KL | 示范来源与 K 的对照 |
+| `research` | SDSD K=1、冻结教师权重 0.25；SDSD K=3、概率平均 | 两个已经实现的改进候选 |
+| `legacy-rejudge` | 原服务器上现存旧输出 | standard-200 重判与 GSM8K 错误诊断，不进入 v2 主表 |
 
-Local assets (not stored in Git):
+`all` 顺序执行前三组，共 8 个训练任务和 1 个 Base 评测。使用同一套新数据和 100-step 预算；不与历史 200-step 主表混算。SFT/GRPO/OPSA 使用 lr=1e-4，SDSD 系列 lr=5e-5；SDSD 各变体其余设置保持一致。冻结教师权重 0.25 是固定初始候选，不是已经调优的最优值。
 
-```text
-model:  /data4/sjj/models/Qwen3-4B-Instruct-2507          (ModelScope)
-judge:  /data4/sjj/catelogue/alignment/models/Qwen3Guard-Gen-4B
-data:   /data4/sjj/datasets/alpaca-cleaned
-        /data4/sjj/datasets/xstest/xstest_prompts.csv
-        /data4/sjj/alignment/harmbench_official_8e1604d
-        /data4/szs/model_weights/HarmBench-Llama-2-13b-cls
-```
+主指标保持三项：**HarmBench standard-200 ASR↓、XSTest safe refusal↓、GSM8K strict accuracy↑**。XSTest unsafe refusal、语义拒绝和 GSM8K flexible accuracy 同时保留以解释错误；不引入综合加权分数。协议有效与结果好坏是两回事，有效的负结果同样保留。
 
-## Reproduce
+## 在原训练服务器执行
+
+复用原环境与缓存，不安装或下载新的 Torch/模型。以下路径来自原仓库配置，须在原服务器验证，当前修复工作区没有这些资产：
 
 ```bash
 cd /data4/sjj/catelogue/sdsd_safety
 PY=/data4/sjj/catelogue/alignment/safety-component/.venv-v31/bin/python
 
-# 1. Fixed train/dev/test splits (Hugging Face cache + ModelScope data)
-$PY -m sdsd_safety.prepare_data --config configs/qwen3_4b.yaml
+# 先查看明确命令，不启动任务
+QUEUE=all GPU=0 bash scripts/run_main_queue.sh --plan-only
 
-# 2. Train one method (use a free GPU; 200 steps, seed 42)
-CUDA_VISIBLE_DEVICES=0 $PY -m sdsd_safety.train --config configs/qwen3_4b.yaml \
-  --override train.method=sft --run-id sft_seed42
-CUDA_VISIBLE_DEVICES=0 $PY -m sdsd_safety.train --config configs/qwen3_4b.yaml \
-  --override train.method=grpo --run-id grpo_seed42
-CUDA_VISIBLE_DEVICES=0 $PY -m sdsd_safety.train --config configs/qwen3_4b.yaml \
-  --override train.method=opsa --run-id opsa_seed42
-CUDA_VISIBLE_DEVICES=0 $PY -m sdsd_safety.train --config configs/qwen3_4b.yaml \
-  --override train.method=sdsd --run-id sdsd_self_k1_seed42
-
-# 3. Generate benchmark outputs for a checkpoint (base uses --adapter none)
-CUDA_VISIBLE_DEVICES=0 $PY -m sdsd_safety.evaluate --phase generate \
-  --run-id base --adapter none --benchmarks harmbench,xstest,gsm8k
-CUDA_VISIBLE_DEVICES=0 $PY -m sdsd_safety.evaluate --phase generate \
-  --run-id sdsd_self_k1_seed42 --adapter runs/sdsd_self_k1_seed42/checkpoint
-
-# 4. Score all saved HarmBench generations once with the official classifier
-CUDA_VISIBLE_DEVICES=0 $PY -m sdsd_safety.evaluate --phase judge
-
-# 5. Merge run summaries
-$PY -m sdsd_safety.evaluate --phase summarize
+# 全部 8 个训练 + Base 评测；需要原服务器的 GPU、缓存及 GitHub 写权限
+QUEUE=all GPU=0 bash scripts/run_main_queue.sh --execute --push
 ```
 
-`results/summary.csv` is the machine-readable main table. `runs/<run_id>/`
-contains the adapter-only checkpoint, `train.log`, `metrics.jsonl`,
-`dev_metrics.json` and `run.json` (git commit, command, config).
+也可以按 `repair` → `ablations` → `research` 分组执行。`--resume` 只续跑同一队列中已核验产物后的剩余任务；代码、配置或成功产物变更会阻止旧状态被误用。训练只保留最新 adapter 与 EMA adapter，不保存 optimizer；中断训练不能伪装成精确续训，应使用新的 run-id/配置重新启动。
 
-## Design choices recorded before the main runs
+`--push` 只发布小型状态和汇总文件，不上传原始回答、模型、数据或 checkpoint，不 force push。代码修复需先在真实 upstream checkout 中应用并提交。本次本地导入历史只用于制作补丁，不能作为替换远端历史的依据。
 
-- `Qwen/Qwen3-4B-Instruct-2507` is a 4B-class non-thinking Qwen3 model available
-  on ModelScope; it keeps rollout cost low and avoids thinking-token inflation.
-  The 8B scale-up is left for a follow-up, not mixed into the main table.
-- Harmful prompts: PKU-SafeRLHF rows with exactly one safe response. A
-  Qwen3Guard audit of the external responses keeps 4,966/8,512 (58.3%).
-- Normal prompts: alpaca-cleaned instructions with non-refusal responses.
-- Main SDSD demonstrations: for harmful prompts only qualified **refusals** are
-  used as demonstrations (external/fixed refusal fallback); normal prompts use
-  qualified non-refusal answers. Allowing any safe answer as a demo collapsed
-  to a repeated-output policy, so it is excluded from the main table.
-- Main SFT: refusal targets (442 external refusals + 2,758 fixed brief
-  refusals), because external safe answers are often safe alternatives rather
-  than refusals. The external-answer SFT is kept as an exploratory failure.
-- Rollouts: 4 per prompt, temperature 1.0, top-p 1.0, max 128 new tokens.
-- LoRA r=32, alpha=64, dropout=0.05 on all attention/MLP projections; AdamW,
-  grad clip 1.0, 16 prompts per step, 200 steps, seed 42. SFT/GRPO/OPSA use
-  lr 1e-4; the stable SDSD run uses lr 5e-5, reference-KL 0.03, EMA teacher
-  update rate 0.02 (the initial lr-1e-4/EMA-0.05 run degenerated).
-- SDSD teacher context is the original question, one sampled demonstration,
-  and the student prefix. K=3 averages three independent per-demo losses.
-- OPSA: frozen base teacher, official type-conditional prompts, mixed KL
-  (0.5 forward + 0.5 reverse).
-- Ablations use 100 steps (budget); this is a stated confound vs the 200-step
-  main runs.
-- Checkpoint policy: adapter-only final checkpoint per run; no per-step or
-  full-model checkpoints.
+旧输出重判：
 
-## Results
+```bash
+QUEUE=legacy-rejudge GPU=0 bash scripts/run_main_queue.sh --execute --push
+```
 
-Main comparison (official HarmBench classifier; XSTest is the Qwen3Guard
-semantic refusal rate, with official string-match in
-`results/tables/main.csv`; 200 steps, seed 42):
+路径不同时可使用 `SDSD_ROOT`、`SDSD_PYTHON`，并给 runner 传入 `--override project_root=/actual/path`、`--override execution.python=/actual/python`；模型与数据路径仍由 YAML 显式指定。
 
-| Method | HarmBench ASR↓ | XSTest safe refusal↓ | XSTest unsafe refusal↑ | GSM8K↑ |
-|---|---|---|---|---|
-| Base | 4.75 [2.75, 7.00] | 7.6 | 82.0 | 90.5 |
-| Safety SFT (refusal targets) | 2.00 [0.75, 3.50] | 92.8 | 100.0 | 87.0 |
-| Safety GRPO (margin + refusal) | 0.00 [0.00, 0.00] | 98.0 | 100.0 | 80.5 |
-| OPSA | 5.25 [3.25, 7.50] | 35.2 | 95.0 | 91.5 |
-| SDSD-Safety (K=1, self refusal demos) | **0.75 [0.00, 1.75]** | 73.2 | 100.0 | 70.5 |
+## 存储与复核
 
-Ablations (100 steps, so not budget-matched to the 200-step main runs):
+- `data/`：审计记录、三个 split、一个 manifest；SFT targets 原地写入共同 train 文件。
+- `runs/<run_id>/`：一份学生 adapter、一份需要时使用的 EMA adapter、实际 `run.json`、训练日志和 dev 结果。
+- `results/raw/<run_id>/`：每个评测集的生成文件、身份 metadata 和评分；原始回答用于重新评分，不重复生成。
+- `runs/queue.json` 与 `status.md`：队列状态，执行时按配置心跳刷新，显示 PID、退出码、日志尾部和阻塞原因。
+- Git 仅保留代码、文档和小型汇总；实际配置与关键来源摘要进入 `results/summary.json`。
 
-| Variant | HarmBench ASR↓ | XSTest safe refusal↓ | XSTest unsafe refusal↑ | GSM8K↑ |
-|---|---|---|---|---|
-| SDSD, external refusal demos, K=1 | 5.25 | 17.6 | 94.0 | 87.5 |
-| SDSD, self refusal demos, K=3 | 12.00 | 25.6 | 98.5 | 90.0 |
-| SFT on external safe answers (exploratory) | 28.50 | 6.8 | 59.0 | 71.0 |
-| SDSD, any-safe demos (200 steps) | invalid: repeated-output degeneration | — | — | — |
+运行聚焦回归检查与构造分布示例：
 
-Key findings:
+```bash
+$PY -m unittest discover -s tests -v
+$PY scripts/teacher_pooling_probe.py
+```
 
-1. **SDSD gives the largest safety gain**: HarmBench ASR falls from 4.75% to
-   0.75% (non-overlapping 95% CI), and all 200 XSTest unsafe prompts are
-   refused. The cost is a 73.2% over-refusal rate on XSTest safe prompts and a
-   20-point GSM8K drop (90.5 -> 70.5). The latter is partly a teacher-context
-   artifact: the model prepends "Of course — here is your complete ... answer"
-   to GSM8K responses.
-2. **OPSA preserves capability but not HarmBench safety**: GSM8K reaches 91.5%
-   and over-refusal is only 35.2%, but ASR is 5.25%, statistically
-   indistinguishable from Base.
-3. **SFT and GRPO are safe but over-refuse**: ASR 2.0%/0.0%, but XSTest safe
-   refusal 92.8%/97.6% and GSM8K 87.0%/80.5%.
-4. **Refusal demos are essential**: using any safe rollout (including safe
-   alternative answers) as the demo collapses to a repeated "I have a human."
-   output; external refusal demos and K=3 preserve capability but lose most of
-   the ASR gain at the 100-step budget.
-5. **Mechanism**: SDSD produces the largest demo sensitivity (prefix log-prob
-   delta +4.66), the largest KL to base (8.39) and concentrates 72% of prefix
-   KL in the early half of the refusal prefix. OPSA makes a tiny,
-   early-concentrated update (KL 0.355, early share 0.74), consistent with its
-   capability preservation. The full table is in
-   [`results/mechanism_main.json`](results/mechanism_main.json).
+Torch 缺失时，梯度测试会明确跳过，不能记为通过。机制脚本仅打印人工设定分布和线性反馈模型的计算结果，不会写入 LLM 实验表。
 
-Raw generations, per-run logs and adapter checkpoints stay outside Git
-(`results/raw/`, `runs/`); machine-readable summaries are in
-[`results/summary.csv`](results/summary.csv),
-[`results/tables/main.csv`](results/tables/main.csv) and
-[`results/tables/ablations.csv`](results/tables/ablations.csv).
+## 来源
 
-## Attribution
-
-- SDSD paper: arXiv:2606.26091 (algorithm and mechanism analysis).
-- OPSA paper/code: arXiv:2605.15239, github.com/FYYFU/OPSA (safety prompts and
-  mixed-KL default; Apache-2.0).
-- HarmBench official behavior set, prompts and Llama-2-13B classifier.
-- XSTest refusal string matching: github.com/paul-rottger/xstest (CC-BY-4.0).
-- Base model and alpaca-cleaned data via ModelScope/Hugging Face.
+- [SDSD](https://arxiv.org/abs/2606.26091)：示范条件自蒸馏和多样性分析。
+- [OPSA](https://arxiv.org/abs/2605.15239)、[官方代码](https://github.com/FYYFU/OPSA)：类型条件教师提示与 mixed KL 对照。
+- [HarmBench](https://github.com/centerforaisafety/HarmBench)：行为集、standard 分类模板及分类器。
+- [XSTest](https://github.com/paul-rottger/xstest)：提示集与字符串拒绝检测。
+- 新资产优先 ModelScope；已有 Hugging Face 缓存直接复用，避免重复下载。

@@ -11,8 +11,6 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable
 
-import numpy as np
-import torch
 import yaml
 
 
@@ -65,6 +63,9 @@ def sha256_text(text: str) -> str:
 
 
 def set_seed(seed: int) -> None:
+    import numpy as np
+    import torch
+
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -109,5 +110,7 @@ def setup_logger(log_path: str | Path, name: str = "sdsd") -> logging.Logger:
 
 
 def gpu_memory_gib(device: int = 0) -> tuple[float, float]:
+    import torch
+
     free, total = torch.cuda.mem_get_info(device)
     return free / 2**30, total / 2**30

@@ -1,218 +1,103 @@
-# SDSD-Safety: method and safety adaptation
+# SDSD-Safety v2：方法与实验协议
 
-## 1. Background
+## 1. 研究对象
 
-SDSD (**S**elf-**D**istillation with **S**ampled **D**emonstrations;
-Nicolicioiu, Pezeshki & Courville, arXiv:2606.26091) studies the on-policy
-self-distillation objective used by SDPO and related methods. For a question
-`x`, the student samples `N` rollouts `y ~ pi_theta(.|x)`. A demonstration
-`y_corr` is sampled from the set of verified-correct rollouts and given to an
-EMA teacher. The teacher scores the student's own prefix:
+基础是 Nicolicioiu、Pezeshki 与 Courville 的 [SDSD](https://arxiv.org/abs/2606.26091)。学生在原请求上生成回答，教师额外获得合格示范，并在学生实际生成的 prefix 上提供分布监督。原论文揭示示范相容性可能强化已有模式；它没有证明安全收益或安全—能力 Pareto 改善。
 
-```
-L_SD(theta; x) = E_{y_corr} [ (1/N) sum_y sum_t
-                  KL( pi_theta(.|x, y_<t) || sg[ pi_theta_bar(.|x, y_corr, y_<t)] ) ]
-```
+本项目测试的具体假设是：**有害请求上集中到安全回答，同时通过正常任务监督与教师组合限制拒绝泛化。** v2 是修复后的新 pilot 协议，不是历史运行的无改动重现。
 
-The paper's central result is that the optimum of SDSD with KL regularization
-tilts the base distribution by the expected pointwise conditional mutual
-information (PCMI)
+## 2. 数据与资格
 
-```
-pi*_SD-KL(y|x) ∝ pi_0(y|x) exp( (1/(1+beta)) E_{y_corr} log[ pi_0(y|x,y_corr) / pi_0(y|x) ] )
-```
+候选来自现存 PKU-SafeRLHF 和 alpaca-cleaned 缓存。PKU 的回答安全标签只用于提出候选回答，不能直接作为请求意图标签。
 
-rather than by a task reward. Consequently, among equally correct outputs, a
-rollout that is more compatible with the sampled demonstration is reinforced
-more strongly, which can concentrate probability mass on already-dominant
-modes. The paper's experiments are on graph path finding and science QA; its
-diversity analysis is not a safety claim.
+同一个冻结 Qwen3Guard 分别判断请求意图、回答安全性及拒绝性。只将明确 Unsafe 的请求划为 harmful，明确 Safe 的请求划为 normal；不确定标签排除并统计。正常回答必须同时 Safe 且 non-refusal。含敏感词的合法正常请求保留，关键词只标记边界覆盖，不决定安全标签。
 
-## 2. Safety adaptation
+目标 split 为 train 2000 harmful + 2000 normal，dev/test 各 200 + 200。正常样本优先保留约 25% 的已审计边界样本，候选不足时记录实际比例；每个 split 至少保留 1 条，避免 train 消耗全部边界样本。不得通过复制样本补齐数据。按规范化请求去重，排除 HarmBench、XSTest、GSM8K 的精确文本重复；这不是对所有语义近似重复的完整证明。
 
-The safety task replaces "verified-correct rollout" with "qualified safe
-rollout". The adaptation keeps the original objective and changes only the
-qualification rule and the role of the demonstration.
+`make_sft_targets` 为 harmful 生成或选择简短拒绝，并对固定 fallback 也做 Safe/refusal 核验；normal 使用已审计 helpful 外部回答。成功后原地更新共同 train 文件与 manifest。所有方法读取同一数据 artifact。训练启动核验审核协议、targets 完成状态、路径、SHA256 和逐行资格，禁止读取 dev/test。
 
-### 2.1 Qualification
+## 3. 教师与示范
 
-A rollout is qualified when Qwen3Guard-Gen-4B returns `Safety: Safe` for the
-(prompt, response) pair.
+每个请求采样 4 条 rollout，temperature=1、top-p=1。harmful 的自采示范必须 Safe 且 refusal；先按文本去重，再最多选择 K 条。缺少的槽位由已验证的拒绝 target 补齐，并记录自采比例。重复 fallback 不会被宣称为独立教师多样性。normal 默认使用外部的已验证非拒绝回答。
 
-- Harmful prompt: in the main method only qualified **refusals** are eligible
-  as demonstrations; safe alternative answers were tried and caused a
-  repeated-output collapse. A safe alternative can still be the SFT target or
-  the external fallback.
-- Normal prompt: a qualified rollout must additionally be non-refusing
-  (official XSTest refusal prefixes) and at least 4 tokens long. This prevents
-  degenerate refusals from becoming "good" normal-task demonstrations.
+教师消息结构为：参考示范放入中性 system context，原问题保持为最后一个 user message，随后评分学生 prefix。token 预算不足时只缩短示范；原问题本身超限时明确报错。学生 rollout、old-policy、当前 policy、reference 与 teacher scoring 使用 eval 模式；学生 scoring 仍保留 autograd。
 
-No new scorer, controller, gate, reward model, or training stage is introduced.
-The judge is a local, frozen, off-the-shelf guard model already present on the
-machine.
+默认教师为学生 LoRA 参数的 EMA，更新率 0.02；reference 为禁用 adapter 的冻结基础模型。已有 reference KL 继续保留。新增条件冻结教师是**修改蒸馏目标**，不等同于首次加入 reference 正则。
 
-### 2.2 Demonstration sampling and fallback
+## 4. 目标与两个候选改进
 
-For each prompt, the student generates `N=4` rollouts at temperature 1.0. The
-qualified rollouts are shuffled and up to `K` distinct texts are used as teacher
-demonstrations. If fewer than `K` are available, the external safe/helpful
-response (PKU safe response for harmful prompts, alpaca response for normal
-prompts) fills the remaining slots. If none is available, the teacher is
-conditioned on the question without a demonstration; this is logged through the
-`demo_self_rate` metric.
+令 p 为学生在固定 prefix 的 next-token 分布，q_j 为第 j 个示范下的教师分布，r 为没有示范的 frozen reference。基础 SDSD 使用：
 
-This fallback is deliberately simple and fixed before the main runs. It is the
-same external response used by the SFT baseline.
+\[
+L=\frac1K\sum_j D_{KL}(p\|\operatorname{sg}q_j)+\beta D_{KL}(p\|\operatorname{sg}r),\qquad \beta=0.03.
+\]
 
-### 2.3 Teacher context
+对每个 completion 先平均 token，再平均 completions；microbatch 按 completion 数加权。SFT 按监督 token 数归一化。所有方法实际执行 10-step linear warmup。
 
-The teacher sees the question, the demonstration as a prior assistant turn, and
-a short instruction to answer the original request again. The student's own
-rollout tokens are appended after the generation prompt, and the teacher's
-next-token distributions on exactly those tokens are used:
+### A. EMA 与条件冻结教师的概率混合
 
-```
-<user> question
-<assistant> demonstration
-<user> Now respond to my original request.
-<assistant> [student prefix]
-```
+\[
+q_j^{mix}=(1-\lambda)q_j^{EMA}+\lambda q_j^{frozen},\qquad \lambda=0.25.
+\]
 
-Three demonstrations (`K=3`) are not concatenated. Each demonstration
-constructs an independent teacher context, and the per-token distillation
-losses are averaged, matching the paper's K=3 ablation.
+两位教师看到同一条经过资格审核的示范和同一个学生 prefix。实现为 log-softmax 后的 logsumexp，目标完全 detach。\(\lambda=0\) 恢复 EMA；\(\lambda=1\) 使用条件冻结教师。基础模型权重复用，但混合增加一次条件前向，不是零计算开销。
 
-### 2.4 Teacher and reference
+这个候选试图保留不随学生漂移的条件目标。0.25 是固定的首轮设置；其能否降低过拒绝且维持安全由真实实验判断。
 
-The teacher is an EMA of the student's LoRA parameters with update rate 0.02
-(`theta_bar <- 0.98 theta_bar + 0.02 theta`) after each optimizer step. Because
-training is LoRA-only, the EMA is over the trainable adapter parameters; the
-frozen base weights are shared conceptually but kept as a second model copy for
-implementation simplicity. The reference model is the frozen base model. A
-token-level reverse KL to the reference is added with coefficient 0.03 for the
-main SDSD run and 0.01 for GRPO.
+### B. K=3 时比较平均 KL 与平均概率
 
-### 2.5 Objective
+现有 `mean_kl` 与新增 `probability_mean` 只改变聚合方式：
 
-SDSD-Safety minimizes the token-level reverse KL from the student to the
-demonstration-conditioned EMA teacher, averaged over rollouts and
-demonstrations, plus the reference KL:
+\[
+L_{mean\_KL}=\frac1K\sum_j D_{KL}(p\|q_j),\qquad
+L_{prob}=D_{KL}\!\left(p\middle\|\frac1K\sum_jq_j\right).
+\]
 
-```
-L = mean_{y_corr, y} mean_t KL( pi_theta(.|prefix) || sg pi_theta_bar(.|x, y_corr, prefix) )
-    + beta_ref mean_t KL( pi_theta(.|prefix) || sg pi_ref(.|prefix) )
-```
+固定 prefix、冻结教师分布时，前者等价于对归一化几何池的 KL 加一个与 p 无关的常数。教师偏好不同正常答案、共同偏好拒绝时，两种池化可能有不同效果；复制完全相同的教师不会因数量增加而自动变尖锐。
 
-### 2.6 OPSA baseline
+数学恒等式只刻画给定 prefix 下的目标，不证明在线更新、参数 EMA 和有限步优化的全局收敛。更完整的来源和构造示例见 [研究记录](research.md)。
 
-OPSA (arXiv:2605.15239) uses a frozen copy of the base model as teacher and a
-type-conditional privileged system prompt:
+## 5. Baseline 与预算
 
-- harmful: "This prompt contains a harmful request. Your only allowed action is
-  to refuse. You must NOT: ... Respond with a brief, clear refusal only."
-- benign: "This is a safe, benign request. Respond helpfully and directly. You
-  must NOT refuse, add safety disclaimers, or treat this as potentially
-  harmful. Provide a complete, accurate answer."
+| 方法 | 信号 | lr | reference KL |
+|---|---|---:|---:|
+| Base | 不更新 | — | — |
+| SFT | 同一批验证过的拒绝/helpful targets，assistant-token CE | 1e-4 | — |
+| GRPO | guard margin，normal refusal 惩罚及 harmful refusal 奖励；group-normalized advantage、clip=0.2 | 1e-4 | 0.01，完整词表 reverse KL |
+| OPSA | 官方类型条件系统提示，冻结教师，0.5 forward + 0.5 reverse KL | 1e-4 | 无独立 reference 项 |
+| SDSD 系列 | 上述示范条件目标 | 5e-5 | 0.03 |
 
-The student is rolled out without this system prompt. OPSA's default loss is
-`mixed` KL, 0.5 forward + 0.5 reverse; we use the full vocabulary rather than a
-top-k truncation. The teacher is frozen, not EMA, and there is no explicit
-reference KL, matching OPSA's design.
+共同设置为 seed=42、100 updates、batch=16（8 harmful + 8 normal）、LoRA r=32/alpha=64/dropout=0。GRPO 的 margin/refusal shaping 保持原项目对照定义，不能称为无 reward shaping 的纯二值 GRPO。
 
-### 2.7 GRPO baseline
+100 updates 对齐更新次数和请求预算，不对齐 SFT 与 on-policy 的总 token/FLOPs。K=3 和双教师也增加前向计算；运行日志保留耗时。原 200-step 表只在归档，不与 v2 混算。
 
-Standard group-relative policy optimization with 4 rollouts per prompt. The
-reward is the continuous Qwen3Guard safety margin
-`log P(" Safe") - log P(" Unsafe")` at the guard's judgment position; normal
-prompts subtract 8.0 for a refusal; harmful prompts add 4.0 for a refusal (a
-pilot showed that the pure margin alone reduced the harmful refusal rate from
-0.75 to 0.28 by step 30, so the explicit refusal bonus keeps the baseline a
-safety-refusal policy). The margin is needed because the base model
-is already Safe on ~98% of PKU rollouts, so a binary Safe/Unsafe or binary
-refusal reward gives zero within-group variance on most prompts (only 3/50
-pilot groups had mixed binary rewards). The margin was validated on 150 PKU
-external responses: mean +7.0 for Qwen3Guard-Safe vs -3.7 for
-Unsafe/Controversial, with only a narrow overlap. Advantages are normalized
-within each prompt group; the token-level clipped objective uses epsilon 0.2
-and a reference KL coefficient of 0.01.
+预定主表为 Base/SFT/GRPO/OPSA/SDSD K1；消融为外部拒绝 K1、K3 mean-KL；改进候选为 K1 + 条件冻结混合、K3 probability-mean。正常边界数据修复用于全部 v2 方法，因此当前对照不能单独估计它的因果贡献；若进一步验证该机制，才增加一个同样本量的边界数据替换对照。
 
-### 2.8 SFT baseline
+## 6. 评测
 
-Assistant-token cross-entropy on the same external responses used as SDSD
-fallback demonstrations (Qwen3Guard-audited PKU safe response for harmful
-prompts, audited alpaca response for normal prompts). The audit keeps only
-external responses the judge marks Safe, so SFT does not learn from the 44% of
-PKU "safe" labels that Qwen3Guard rejects.
+主指标仅保留 HarmBench ASR、XSTest safe refusal、GSM8K accuracy。Pareto 判断分别查看这些原始维度，不构造综合分数。
 
-## 3. Evaluation protocol
+| 评测 | v2 定义 |
+|---|---|
+| HarmBench | 官方 **standard 200** 个请求、greedy direct generation、官方 Llama-2-13B standard 分类模板；这不是 all-400 或自适应攻击鲁棒性评测 |
+| XSTest | 全部 450 个请求；官方字符串拒绝率分 safe 250/unsafe 200；guard 语义拒绝单列辅助诊断 |
+| GSM8K | seed42 固定 200 题、greedy、max 512 new tokens；主列为 `####` strict numeric exact match，flexible last-number 单列 |
+| 不确定性 | 事件率报告 Wilson 区间、有效/总数、解析失败和缺失上下界；未知标签不能当安全或成功 |
 
-- **HarmBench**: all 400 text behaviors, one greedy generation per behavior,
-  official Llama-2-13B behavior classifier, ASR = fraction labeled "yes".
-- **XSTest**: all 450 official prompts, greedy generation, official refusal
-  string matching. Report refusal rate on the 200 unsafe prompts and refusal
-  rate on the 250 safe prompts (over-refusal).
-- **GSM8K**: 200 fixed test questions (seed 42), greedy generation, exact match
-  of the number after `####`.
-- **Dev set**: 300 held-out PKU harmful prompts + 100 held-out alpaca prompts;
-  used only for checkpoint/run selection, never for training. Test benchmarks
-  are never used for training or selection.
+尚未实现 contextual 与 copyright/hash 完整评测，配置 all-400 会拒绝执行，避免继续误报。旧 400 条输出若仍在原服务器，可按官方 ID 和原问题精确筛出 standard 200 重判，保留 legacy 身份，不能冒充修复后训练。
 
-## 4. Theory mapping for the safety result
+GSM8K 同值数字、分数和小数归一化；正常礼貌开头不自动视为错误。`diagnose` 复用现有 raw 输出记录格式差异、可能截断和少量错误样本，不重新调用模型。
 
-The safety setting is a special case of SDSD's analysis: among safe responses,
-the EMA teacher conditioned on a safe demonstration will assign higher
-probability to responses that share the demonstration's refusal style or safe
-completion strategy. The SDSD tilt therefore predicts that safety training
-concentrates mass on the dominant safe mode. Two consequences are checked in
-the experiments:
+## 7. 运行身份与结果发布
 
-1. HarmBench ASR should fall relative to Base and SFT if the safe mode is
-   reinforced.
-2. XSTest over-refusal and GSM8K accuracy test whether the reinforced mode is
-   an over-generalized refusal mode or a task-conditioned safety behavior.
+训练协议为 `sdsd-safety-training-v2`，评测协议为 `sdsd-safety-standard200-v2`。训练 metadata 在启动、每步与保存 checkpoint 后更新，含实际命令/配置、git/工作树/代码哈希、数据哈希、种子、已完成与预定步数。只有全部训练步骤完成且 checkpoint 保存成功才标记 training valid；随后 dev 失败单列，不抹掉已经完成的训练事实。
 
-The theory does not predict that SDSD is uniformly better than GRPO; the
-comparison is empirical. The project reports the measured trade-off rather than
-assuming a win.
+每个评测集记录模型与 adapter 身份、请求与有效 token 身份、解码设置、原始输出与评分来源。summary 保留可审计的实际配置和来源。缺失/旧协议/来源不一致记录进入台账；只有完整、同协议、可比较的预定运行进入正式表格。有效性判定不要求优于 baseline。
 
-## 5. Deviations and limitations
+队列串行等待选定 GPU，不终止他人任务。status 记录实际 PID、exit code、日志尾部和阻塞条件；续跑需要核验代码、配置和成功产物。进程退出 0 后仍需检查最终有效结果，不能靠空表宣告完成。
 
-- 4B non-thinking backbone and 200 steps, not the paper's 8B/30-epoch QA scale.
-- The two SDSD ablations use 100 steps, so they are not budget-matched to the
-  200-step main run.
-- The main SDSD run uses lr 5e-5 while SFT/GRPO/OPSA use lr 1e-4; the higher
-  SDSD lr (1e-4) collapsed to repeated output.
-- SDSD's refusal demos over-generalize: the main model over-refuses XSTest safe
-  prompts (73.2%) and prepends a teacher-style meta sentence on GSM8K.
-- LoRA, not full-parameter fine-tuning; EMA is over adapter parameters.
-- One seed for the main table, with at most two additional exploratory seeds
-  recorded separately if needed.
-- Harmless/helpful behavior is represented by alpaca-cleaned; this is a broad
-  but imperfect normal-task proxy.
-- The Qwen3Guard judge is also the GRPO reward source; the evaluation of safety
-  uses an independent official HarmBench classifier and rule-based XSTest, but
-  the judge's blind spots can enter training.
+每个训练最多保存最新学生与 EMA adapter，不保存多代 checkpoint；无 optimizer 精确恢复。评测与机制分析复用 raw 输出；摘要推送不包含权重或完整回答。
 
+## 8. 当前验证边界
 
-## 6. Final results (2026-10-30)
-
-Main table (mean over 400 HarmBench behaviors, 450 XSTest prompts, 200 GSM8K
-questions; one seed):
-
-| Method | HarmBench ASR | XSTest safe refusal | XSTest unsafe refusal | GSM8K |
-|---|---|---|---|---|
-| Base | 4.75 | 7.6 | 82.0 | 90.5 |
-| SFT (refusal) | 2.00 | 92.8 | 100.0 | 87.0 |
-| GRPO | 0.00 | 98.0 | 100.0 | 80.5 |
-| OPSA | 5.25 | 35.2 | 95.0 | 91.5 |
-| SDSD-Safety K=1 self refusal | 0.75 | 73.2 | 100.0 | 70.5 |
-
-XSTest values are the Qwen3Guard semantic refusal rates; official string-match
-values and 95% CIs are in `results/tables/main.csv`.
-
-The result is a trade-off frontier rather than a free lunch. SDSD gives the
-largest ASR reduction but over-refuses and loses GSM8K; OPSA preserves
-capability and over-refusal but does not improve ASR over Base; SFT and GRPO
-are safe but nearly always refuse. The mechanism measurement (prefix KL,
-demo sensitivity) is consistent with SDSD concentrating an early-token
-refusal tilt, while OPSA makes a much smaller early-concentrated update.
+当前工作区完成的是代码修复、CPU 回归检查、官方模板逐字核验与构造机制计算。真实 tokenizer/model smoke、Torch 梯度测试、数据审核、训练、基准评测及远端推送仍需原 sjj 环境和写权限。实际状态见 [`status.md`](../status.md)。
