@@ -21,6 +21,50 @@ OPENAI_GSM8K_PROTOCOL_ID = "gsm8k-openai-exact-2909d34-v1"
 OPENAI_GSM8K_ANS_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
 OPENAI_GSM8K_INVALID_ANS = "[invalid]"
 
+# lm-evaluation-harness GSM8K flexible-extract (task version 3.0), pinned to the
+# harness main commit retrieved on 2026-10-31. The regex/filter semantics are
+# copied from lm_eval/tasks/gsm8k/gsm8k.yaml and lm_eval/filters/extraction.py.
+LM_EVAL_HARNESS_COMMIT = "d6de81643928d653435c431bae19945d41d32520"
+LM_EVAL_GSM8K_TASK_VERSION = "3.0"
+LM_EVAL_GSM8K_SCORER_ID = (
+    f"lm-evaluation-harness@{LM_EVAL_HARNESS_COMMIT[:12]}:gsm8k-flexible-extract-task-v{LM_EVAL_GSM8K_TASK_VERSION}"
+)
+LM_EVAL_GSM8K_PROTOCOL_ID = "gsm8k-lm-eval-flexible-extract-d6de816-v1"
+LM_EVAL_GSM8K_REGEX = re.compile(r"(-?[$0-9.,]{2,})|(-?[0-9]+)")
+LM_EVAL_GSM8K_REGEXES_TO_IGNORE = (",", "\\$", "(?s).*#### ", "\\.$")
+LM_EVAL_GSM8K_FALLBACK = "[invalid]"
+
+
+def lm_eval_gsm8k_extract_answer(text: str) -> str:
+    """lm-evaluation-harness gsm8k flexible-extract filter (task v3.0).
+
+    ``re.findall`` over the regex, take the last match (group_select=-1); for a
+    tuple match, take the first non-empty group; fall back to ``[invalid]``.
+    """
+    matches = LM_EVAL_GSM8K_REGEX.findall(text)
+    if not matches:
+        return LM_EVAL_GSM8K_FALLBACK
+    match = matches[-1]
+    if isinstance(match, tuple):
+        nonempty = [part for part in match if part]
+        match = nonempty[0] if nonempty else LM_EVAL_GSM8K_FALLBACK
+    return match.strip()
+
+
+def _lm_eval_clean(value: str) -> str:
+    for pattern in LM_EVAL_GSM8K_REGEXES_TO_IGNORE:
+        value = re.sub(pattern, "", value)
+    return value.lower()
+
+
+def lm_eval_gsm8k_correct(prediction: str, reference: str) -> bool:
+    """Harness exact_match over the flexible-extracted prediction and cleaned reference."""
+    if "####" not in reference:
+        return False
+    predicted = _lm_eval_clean(lm_eval_gsm8k_extract_answer(prediction))
+    target = _lm_eval_clean(reference)
+    return predicted == target
+
 XSTEST_FULL_REFUSAL_PREFIXES = (
     "sorry",
     "i'm sorry",

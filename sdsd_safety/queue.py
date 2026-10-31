@@ -30,6 +30,17 @@ GRADIENT_TESTS = (
 )
 
 
+def expected_adapter_path(config: dict[str, Any], run_id: str) -> str:
+    """Planned adapter path for a trained run, whether or not training has run yet."""
+    return str(Path(config["project_root"]) / config["train"]["output_root"] / run_id / "checkpoint")
+
+
+def adapter_argument(config: dict[str, Any], run_id: str, *, is_base: bool = False) -> str:
+    """Only an explicit Base run evaluates without an adapter; trained runs bind
+    their expected checkpoint path at plan time and fail loudly if it is absent."""
+    return "none" if is_base else expected_adapter_path(config, run_id)
+
+
 def build_jobs(config: dict[str, Any], config_path: str, overrides: list[str], group: str) -> list[dict[str, Any]]:
     python = config.get("execution", {}).get("python", sys.executable)
     common = ["--config", str(Path(config_path).resolve())]
@@ -73,20 +84,22 @@ def build_jobs(config: dict[str, Any], config_path: str, overrides: list[str], g
     if group in {"acl-round1", "acl-round2"}:
         round1 = list(config["acl"]["round1_runs"])
         samples = int(config["eval"].get("asr_samples", 16))
-        checkpoint_root = Path(config["project_root"]) / config["train"]["output_root"]
 
-        def adapter_for(run_id: str) -> str:
-            checkpoint = checkpoint_root / run_id / "checkpoint"
-            return str(checkpoint) if checkpoint.is_dir() else "none"
+        # Bind the expected adapter path at plan time even before training creates it.
+        # Only an explicit Base run may use "none"; execution validates the path and
+        # identity and must fail rather than silently evaluate Base for a new run.
+        def adapter_for(run_id: str, *, is_base: bool = False) -> str:
+            return adapter_argument(config, run_id, is_base=is_base)
 
         if group == "acl-round1":
             for run_id in round1:
                 add(f"Generate 16-sample HarmBench for {run_id}", "harmbench16",
-                    ["--phase", "generate", "--samples", str(samples), "--run", f"{run_id}:{adapter_for(run_id)}"],
+                    ["--phase", "generate", "--samples", str(samples),
+                     "--run", f"{run_id}:{adapter_for(run_id, is_base=run_id == 'base_v2')}"],
                     stage="harmbench16_generate", run_id=run_id)
             judge_args = ["--phase", "judge", "--samples", str(samples)]
             for run_id in round1:
-                judge_args += ["--run", f"{run_id}:{adapter_for(run_id)}"]
+                judge_args += ["--run", f"{run_id}:{adapter_for(run_id, is_base=run_id == 'base_v2')}"]
             add("Judge repeated samples with official classifier", "harmbench16", judge_args,
                 stage="harmbench16_judge", runs=round1)
             add("Analyze paired ASR@k endpoints", "analyze_asr",
@@ -154,7 +167,7 @@ def build_jobs(config: dict[str, Any], config_path: str, overrides: list[str], g
             for setting in settings:
                 args += ["--override", setting]
             add(f"Train {run_id}", "train", args, run_id=run_id, method=method)
-        adapter = str(Path(config["project_root"]) / config["train"]["output_root"] / run_id / "checkpoint") if method else "none"
+        adapter = adapter_argument(config, run_id, is_base=method is None)
         add(f"Generate {run_id}", "evaluate", ["--phase", "generate", "--run-id", run_id, "--adapter", adapter], run_id=run_id)
         add(f"Score safety {run_id}", "evaluate", ["--phase", "judge", "--runs", run_id], runs=[run_id])
         add(f"Score over-refusal {run_id}", "evaluate", ["--phase", "judge_xstest", "--runs", run_id], runs=[run_id])

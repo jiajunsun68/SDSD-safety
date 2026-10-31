@@ -51,6 +51,7 @@ JAILBREAK_INDEX = 5
 BEHAVIORS_CSV = Path("/data4/sjj/alignment/harmbench_official_8e1604d/data/behavior_datasets/harmbench_behaviors_text_val.csv")
 EXPECTED_BEHAVIORS = 41
 MAX_NEW_TOKENS = 320
+ADAPTER_SCALE = 1.0
 CODE_FILES = ("harmbench_attack.py", "metrics.py", "evaluate.py", "modeling.py", "judging.py", "utils.py")
 DEFAULT_RUNS = {
     "base_v2": None,
@@ -153,7 +154,7 @@ def generate(config: dict[str, Any], run_id: str, adapter: str | None, samples: 
         "max_prompt_tokens": int(config["data"]["max_prompt_tokens"]), "seed": int(config["seed"]),
     }
     set_seed(int(config["seed"]))
-    model, tokenizer = load_model_for_eval(config, adapter)
+    model, tokenizer = load_model_for_eval(config, adapter, scale=ADAPTER_SCALE)
     started = time.perf_counter()
     results = generate_rollouts(
         model, tokenizer, prompts, num_rollouts=samples,
@@ -185,6 +186,7 @@ def generate(config: dict[str, Any], run_id: str, adapter: str | None, samples: 
         "config": config, "decoding": decoding,
         "model_identity": model_identity(resolve_path(config, config["model"]["path"])),
         "adapter_identity": _adapter_identity(config, adapter),
+        "adapter_scale": ADAPTER_SCALE,
         "training_identity": training_provenance(config, run_id, adapter),
         "behavior_source_path": str(BEHAVIORS_CSV), "behavior_source_sha256": file_hash(BEHAVIORS_CSV),
         "behavior_ids": [row["id"] for row in behaviors],
@@ -320,6 +322,21 @@ def analyze(config: dict[str, Any], run_ids: list[str]) -> dict[str, Any]:
         lines.append(f"| {a} − {b} | {k} | {fmt(value['difference'])} | "
                      f"[{fmt(value['ci95_low'])}, {fmt(value['ci95_high'])}] | {value['ci_excludes_zero']} |")
     (table_dir / TABLE_NAME).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # Compact per-request counts: one row per run x behavior, reusing the same
+    # judged samples for every k endpoint.
+    per_request_path = table_dir / (Path(TABLE_NAME).stem + "_per_request.csv")
+    with per_request_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(["run_id", "behavior_id", "n_samples", "harmful_count", "unknown_count"])
+        for run_id in run_ids:
+            rows = read_jsonl(root / ATTACK_DIR / run_id / "harmbench_attack_judged.jsonl")
+            for row in rows:
+                labels = row["labels"]
+                writer.writerow([run_id, row["behavior_id"], len(labels),
+                                 sum(1 for label in labels if label is True),
+                                 sum(1 for label in labels if label is None)])
+    report["per_request_counts_path"] = str(per_request_path)
+    write_json(analysis_dir / REPORT_NAME, report)
     print("\n".join(lines), flush=True)
     return report
 
@@ -327,8 +344,18 @@ def analyze(config: dict[str, Any], run_ids: list[str]) -> dict[str, Any]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="configs/qwen3_4b.yaml")
-    parser.add_argument("--runs", default=",".join(DEFAULT_RUNS))
+    parser.add_argument("--run", action="append", default=[],
+                        help="run_id:adapter_path (or run_id:none); repeatable. Overrides --runs.")
+    parser.add_argument("--runs", default=None, help="comma-separated ids from the built-in run map")
     parser.add_argument("--samples", type=int, default=16)
+    parser.add_argument("--jailbreak-index", type=int, default=JAILBREAK_INDEX)
+    parser.add_argument("--behaviors-csv", type=Path, default=BEHAVIORS_CSV)
+    parser.add_argument("--expected-behaviors", type=int, default=EXPECTED_BEHAVIORS)
+    parser.add_argument("--protocol-id", default=PROTOCOL_ID)
+    parser.add_argument("--attack-dir", type=Path, default=ATTACK_DIR)
+    parser.add_argument("--table-name", default=TABLE_NAME)
+    parser.add_argument("--report-name", default=REPORT_NAME)
+    parser.add_argument("--adapter-scale", type=float, default=ADAPTER_SCALE)
     parser.add_argument("--phase", choices=("generate", "judge", "all", "analyze"), default="all")
     parser.add_argument("--bootstrap-seed", type=int, default=20261030)
     parser.add_argument("--bootstrap-replicates", type=int, default=10000)
@@ -337,20 +364,38 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    global PROTOCOL_ID, ATTACK_DIR, TABLE_NAME, REPORT_NAME, JAILBREAK_INDEX, BEHAVIORS_CSV, EXPECTED_BEHAVIORS, ADAPTER_SCALE
     args = parse_args()
+    PROTOCOL_ID = args.protocol_id
+    ATTACK_DIR = args.attack_dir
+    TABLE_NAME = args.table_name
+    REPORT_NAME = args.report_name
+    JAILBREAK_INDEX = args.jailbreak_index
+    BEHAVIORS_CSV = args.behaviors_csv
+    EXPECTED_BEHAVIORS = args.expected_behaviors
+    ADAPTER_SCALE = args.adapter_scale
     config = load_config(args.config, args.override)
-    run_ids = [item.strip() for item in args.runs.split(",") if item.strip()]
-    unknown = [run_id for run_id in run_ids if run_id not in DEFAULT_RUNS]
-    if unknown:
-        raise SystemExit(f"unknown run ids: {unknown}")
+    if args.run:
+        run_map: dict[str, str | None] = {}
+        for spec in args.run:
+            run_id, adapter = spec.split(":", 1)
+            run_map[run_id] = None if adapter in {"none", "base", ""} else adapter
+    elif args.runs:
+        run_ids = [item.strip() for item in args.runs.split(",") if item.strip()]
+        unknown = [run_id for run_id in run_ids if run_id not in DEFAULT_RUNS]
+        if unknown:
+            raise SystemExit(f"unknown built-in run ids: {unknown}")
+        run_map = {run_id: DEFAULT_RUNS[run_id] for run_id in run_ids}
+    else:
+        run_map = dict(DEFAULT_RUNS)
     if args.phase in {"generate", "all"}:
-        for run_id in run_ids:
-            generate(config, run_id, DEFAULT_RUNS[run_id], args.samples)
+        for run_id, adapter in run_map.items():
+            generate(config, run_id, adapter, args.samples)
     if args.phase in {"judge", "all"}:
-        for run_id in run_ids:
+        for run_id in run_map:
             judge(config, run_id, args.samples, args.bootstrap_seed, args.bootstrap_replicates)
     if args.phase in {"analyze", "all"}:
-        analyze(config, run_ids)
+        analyze(config, list(run_map))
 
 
 if __name__ == "__main__":

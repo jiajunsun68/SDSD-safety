@@ -360,5 +360,32 @@ class TorchGradientTests(unittest.TestCase):
         torch.testing.assert_close(token_kl([student], [a]), token_kl([student], mixture_teacher_log_probs([a], [a], 0.5)))
 
 
+class AdapterPathTests(unittest.TestCase):
+    def test_new_trained_run_binds_expected_path_before_checkpoint_exists(self):
+        from sdsd_safety.queue import adapter_argument, expected_adapter_path
+        config = {"project_root": "/tmp/project", "train": {"output_root": "runs"}}
+        path = expected_adapter_path(config, "brand_new_run")
+        self.assertEqual(path, "/tmp/project/runs/brand_new_run/checkpoint")
+        self.assertEqual(adapter_argument(config, "brand_new_run"), path)
+        self.assertEqual(adapter_argument(config, "base_v2", is_base=True), "none")
+
+    def test_acl_round2_jobs_never_plan_none_for_trained_runs(self):
+        from sdsd_safety.utils import load_config
+        config = load_config(ROOT / "configs" / "qwen3_4b.yaml")
+        jobs = build_jobs(config, str(ROOT / "configs" / "qwen3_4b.yaml"), [], "acl-round2")
+        checked = 0
+        for job in jobs:
+            if job["stage"] in {"generate", "harmbench16_generate"}:
+                command = job["command"]
+                if "--adapter" in command:
+                    self.assertNotEqual(command[command.index("--adapter") + 1], "none")
+                    checked += 1
+                if "--run" in command:
+                    spec = command[command.index("--run") + 1]
+                    self.assertFalse(spec.endswith(":none"), spec)
+                    checked += 1
+        self.assertGreater(checked, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

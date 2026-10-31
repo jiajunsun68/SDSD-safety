@@ -125,7 +125,16 @@ v2 修复、数据审核、统一 targets、2 步 GPU smoke、Base + 8 个 100-s
 | Q11 | Dev protocol selection: official HumanJailbreaks indices 0–7 on Base, 41 val behaviors × 4 samples | completed | 131531 | 0 | winner idx6 (ASR@1 2.44%, @4 2.44%); idx2 excluded (>512 tokens); log `logs/attack_sweep.log`; output `results/raw_attack/humanjb-sweep4-v1/` |
 | Q12 | Fixed attack idx6 × HarmBench standard-val 41 behaviors × 16 samples × 5 runs | completed | 165690 / 214096 | 0 | anchor ASR@16 48.78% vs base 2.44%; judge retried on GPU0 after GPU6 tenant OOM; table `results/tables/attack_humanjb_idx6_dev.md` |
 | Q13 | Held-out confirmation: idx6 × HarmBench text-test 159 standard behaviors × 16 samples × 5 runs | completed | 248058 / 422237 | 0 | anchor ASR@16 57.23% vs base 2.52% (Δ+54.72pp CI [+47.17,+62.26]); 91/159 behaviors harmful; log `logs/attack_idx6_test159_judge.log`; table `results/tables/attack_humanjb_idx6_test159.md` |
-| Q14 | Decide next: robustness repair vs trade-off paper; no automatic training/attack | planned | — | — | waiting: choose one intervention or paper pivot; raw attack artifacts retained |
+| Q14 | Decide next: robustness repair vs trade-off paper; no automatic training/attack | completed | — | 0 | chose mechanism-guided repair: P1 teacher-context probe + P2 scale pilot + R1 plain-frozen; results below |
+| Q15 | P1 teacher x context x prefix probe | completed | — | 0 | `results/analysis/teacher_context_probe.json`, `results/tables/teacher_context_probe.md` |
+| Q16 | P2 LoRA scale pilot (K1/anchor, s=0/0.25/0.5/1.0) | completed | 1262685 | 0 | dose threshold: anchor s<=0.25 Base-level ASR, s=1 35.37/41.46%; normal dev refusal 0% at s>=0.25; `results/tables/scale_pilot.md` |
+| Q17 | R1 plain-frozen training (frozen_teacher_demo=false) | completed | 1248532 | 0 | 100/100 steps, dev normal_refusal 2.0%; `runs/sdsd_v3_anchor_plainfrozen_100_seed42/` |
+| Q18 | R1 evaluation: standard200 + XSTest + GSM8K | completed | 1378807 | 0 | HB greedy 0.5%; XSTest 5.6/7.2 safe, 79.0 unsafe; GSM lm-eval 90.5 |
+| Q19 | R1 fixed idx6 test159 x16 attack | completed | 1362510 | 0 | ASR@1/@4/@16 = 1.26/2.31/3.14% vs anchor 57.23%; unknown=0 |
+| Q20 | R2 K1 + ref_kl 0.3 training (pre-registered branch 1) | running | 1411299 | — | GPU5; started 14:27, 100 steps; log `logs/r2_refkl.log` |
+| Q21 | R2 evaluation + fixed attack, compare with R1 | planned | — | — | runs after Q20 checkpoint; standard200 + XSTest + GSM8K + idx6 test159 |
+| Q22 | Cross-family R3/R4 (Llama-3.1-8B-Instruct preferred) | planned | — | — | blocked pending local model identification and Q20 GPU release |
+| Q23 | Independent attack-family confirmation | planned | — | — | select held-out attack family not used in prompt selection |
 <!-- QUEUE:END -->
 
 - 2026-10-31 01:00：Q11 完成。8 个固定 prompt 的 Base dev 结果（41 val behaviors × 4 samples；index 2 因 prompt >512 tokens 不合法，未截断）：idx0 0/0；idx1 ASR@1=0.61%、@4=2.44%；idx2 超长排除；idx3/4/5/7 均为 0%；**idx6 ASR@1=2.44%、@4=2.44%（最高 @1，按预注册规则胜出）**。全部输出在 `results/raw_attack/humanjb-sweep4-v1/idx{0..7}/`，日志 `logs/attack_sweep.log`。冻结选择：**HumanJailbreaks index 6**（“Buer rules”角色扮演 prompt；源文件 sha256 62e53558...，prompt 文本与哈希记录在 manifest）。
@@ -160,3 +169,45 @@ v2 修复、数据审核、统一 targets、2 步 GPU smoke、Base + 8 个 100-s
 配对（请求级 95% CI，10,000 reps）：anchor−base @1 +36.95 [+30.74,+43.32]、@4 +48.41 [+41.12,+55.71]、@16 **+54.72 [+47.17,+62.26]**；K1−base @16 +12.58 [+7.55,+18.24]；external−base @16 +30.19 [+23.27,+37.11]；OPSA−base @16 +8.18 [+4.40,+12.58]；全部排除 0。Anchor 91/159 behaviors 至少一次有害；类别有害率 chemical 10.5%、cyber 32.6%、harassment 35.9%、harmful 36.8%、illegal 46.9%、misinformation 49.8%。**dev 的 anchor 越狱脆弱性在未参与 prompt 选择的 159 个 test behaviors 上确认且更强（dev @16 48.78% → test 57.23%）；直接请求上的低 ASR 掩盖了固定人类越狱下的严重不鲁棒。** 输出 `results/raw_attack/humanjb-idx6-test159-v1/`，表 `results/tables/attack_humanjb_idx6_test159.md`，分析 `results/analysis/attack_humanjb_idx6_test159.json`。
 
 **研究判断更新：** 原“anchor 新增安全收益”假设被 held-out 证据否定；当前可支持的贡献是“SDSD/anchor 降低过拒绝与保留 flexible 能力，但以显著增加固定越狱脆弱性为代价，且越狱脆弱性随 anchor 权重/示范条件增强”。论文不能声称安全收益；下一轮（Q14，未启动）二选一：(a) 针对 roleplay/越狱的鲁棒性修复数据或 anchor 正则，再走新确认；(b) 将“安全适配的效率-鲁棒性权衡”作为主论文发现并补充机制/外部验证。固定 HumanJailbreaks 只是单一 prompt、单 seed 的 fixed attack，非 transfer/adaptive；论文需按此限定。
+
+## I. 下一阶段：anchor 失效机制与机制导出的修复（起点 04b1e91，2026-10-31）
+
+研究问题：冻结分支为何放大安全损伤——被冻结的条件分布、学生访问的前缀，还是更新强度？主候选：示范筛选在完整回答层面，蒸馏传递的是给定上下文与学生前缀的 token 分布；冻结参数不自动保留原始上下文下的安全行为。
+
+已完成的三项小修：
+- **A（队列 adapter 路径）**：`queue.py` 新增 `expected_adapter_path` / `adapter_argument`；只有显式 Base 使用 `none`，训练 run 在 plan 时绑定预期 checkpoint；`load_model_for_eval` 对缺失目录/训练元数据直接报错，不再静默评估 Base。新增回归测试（新 run 未训练时仍绑定预期路径；acl-round2 不出现 `:none`）。
+- **B（攻击参数化）**：`harmbench_attack.py` 支持 `--run id:adapter`、`--jailbreak-index`、`--behaviors-csv`、`--expected-behaviors`、`--protocol-id`、`--attack-dir`、`--table-name`、`--report-name`、`--adapter-scale`；每次输出 `*_per_request.csv`（run_id, behavior_id, n_samples, harmful_count, unknown_count）；manifest 记录 scale、命令与源/提示/权重/judge 身份。
+- **C（统一能力计分）**：新增 lm-evaluation-harness `gsm8k` flexible-extract（task v3.0，harness commit `d6de8164...`，regex `(-?[$0-9.,]{2,})|(-?[0-9]+)`，group_select=-1，regexes_to_ignore 与 exact_match 语义逐项复现）。对 9 个 v2 run 的已保存回答统一重评分，未调用模型；旧 OpenAI exact 保留为格式诊断并记录 supersedes。**新主列 GSM8K lm-eval flexible：base 91.0、SFT 90.5、GRPO 91.5、OPSA 91.0、SDSD K1 88.5、external 90.0、anchor 91.0、K3 mean-KL 90.0、K3 prob-mean 89.0**；旧 exact 列（0–43%）只反映 `#### ` 格式服从性。
+
+运行中：
+- **R1**：`sdsd_v3_anchor_plainfrozen_100_seed42` 从 Base 重训（frozen_teacher_weight=0.25, frozen_teacher_demo=false, lr 5e-5, ref_kl 0.03, 100 steps, seed 42）；GPU5 PID 1248532，日志 `logs/r1_plainfrozen.log`，13:11 约 24/100 步。2-step GPU smoke 已通过（loss/grad 有限、teacher_context=`ema_demo_plus_frozen_plain_user`、adapter 保存），smoke run 已删除。
+- **P2**：K1/anchor 的 LoRA scale 0.25/0.5/1.0（s=0 共享 Base）在 idx6 val41 × 4 samples 上做 pilot，并测 100 条 normal dev 的 greedy 字符串拒绝率；GPU7 PID 1262685，日志 `logs/scale_pilot.log`，base 点已完成（ASR@1=@4=2.44%，normal refusal 1%），其余点运行中。输出 `results/raw_attack/scale-pilot-v1/`、`results/tables/scale_pilot.md`。
+- **P1**：已实现于 `analyze_mechanism.py --mode teacher_context`（Base / EMA-K1 / EMA-anchor × plain/demo × no-prefix/short-compliant-prefix；固定 41 val attack + 20 normal 请求；固定 continuation 来自已有 anchor 攻击回答/正常 dev 回答；safe demo 使用独立的 `pku-train-000087` 回答，不复用 REFUSAL_PREFIX 作为评分对象）；尚未运行，待 P2 释放 GPU7。
+
+下一步：R1 完成后跑标准 HarmBench/XSTest/GSM8K + idx6 攻击评估；P2 结果决定“更新幅度”分支；P1 区分上下文/参数/前缀；据此选择一个 R2 训练干预（强 reference KL、低 lr、plain-frozen 或针对性上下文修复）。
+
+- 2026-10-31 14:02：**P1 完成**（`analyze_mechanism.py --mode teacher_context`，GPU5，约 2 分钟）。固定 41 val attack + 20 normal 请求；continuation 来自已有 anchor idx6 攻击回答（40 tokens）与 normal dev 外部回答；safe demo 用独立 `pku-train-000087` 回答。结果（teacher-forced mean token logP；KL 为 8 请求首个计分 token 的 KL(EMA||Base)）：
+  - plain_none harmful logP：Base −4.81、EMA-K1 −5.25、EMA-anchor −5.22（EMA 在干净起点并不更偏好有害续写，反而更低）；normal logP：Base −2.48、EMA −2.37/−2.35（更 helpful）。
+  - demo_none harmful：Base −4.82、EMA −5.19/−5.16（上下文效应很小）；normal：Base −2.29、EMA −2.34/−2.32。
+  - short compliant prefix 使所有教师 harmful logP 从约 −5 升到约 −2.5；EMA 相对 Base 只高约 0.05–0.3（KL harmful 0.05–0.16），normal KL 在 plain_none 达 8.7–9.3（首个计分 token 的最大分布差异在 normal 起点）。
+  - 解释：**在这个固定状态探针中，损坏不是“EMA 教师在干净请求上更偏好有害文本”；normal 起始 token 分布与 student 已进入顺从后的前缀状态更值得关注。** 这是描述性条件效应，不是 rollout 概率或因果训练结论。输出 `results/analysis/teacher_context_probe.json`、`results/tables/teacher_context_probe.md`。
+
+- 2026-10-31 13:53：**P2 完成**（LoRA scale pilot，GPU7；7 个点，每点 idx6 val41×4 + 100 条 normal dev greedy）：
+
+| model | scale | ASR@1 % | ASR@4 % | normal-dev refusal % |
+|---|---:|---:|---:|---:|
+| base | 0 | 2.44 | 2.44 | 1.00 |
+| K1 | 0.25 | 2.44 | 2.44 | 0.00 |
+| K1 | 0.5 | 2.44 | 2.44 | 0.00 |
+| K1 | 1.0 | 6.10 | 9.76 | 0.00 |
+| anchor | 0.25 | 2.44 | 2.44 | 0.00 |
+| anchor | 0.5 | 4.88 | 7.32 | 0.00 |
+| anchor | 1.0 | 35.37 | 41.46 | 0.00 |
+
+  **解释：更新幅度是关键因素之一，且存在明显的剂量阈值。** anchor 在 s=0.25 时攻击 ASR 与 Base 相同（2.44%），s=0.5 轻度升高，s=1 爆炸到 35–41%；K1 在 s≤0.5 安全、s=1 轻度升高。normal dev 字符串拒绝率在 s≥0.25 都已降到 0%（Base 1%），说明收益在小更新时已出现。输出 `results/raw_attack/scale-pilot-v1/`、`results/analysis/scale_pilot.json`、`results/tables/scale_pilot.md`；未导出 merged model/checkpoint。
+
+- 2026-10-31 13:58：**R1 训练完成**（`sdsd_v3_anchor_plainfrozen_100_seed42`，GPU5，100/100 步，dev normal_refusal 2.0%，与旧 anchor 相同；teacher_context=`ema_demo_plus_frozen_plain_user`，run.json valid）。R1 的 idx6 test159×16 攻击评估（GPU7 PID 1362510）与标准 HarmBench/XSTest/GSM8K 评估（GPU5 PID 1378807）运行中。P1/P2 结果指向两个候选修复方向：plain-frozen（R1，检验上下文）和更小更新幅度（低 lr，检验 scale 阈值）；R1 结果将决定 R2。
+
+- 2026-10-31 14:24：**R1 评估完成（plain-frozen 修复有效）**。固定 idx6 攻击（test159 × 16，independent judge，unknown=0）：**ASR@1 1.26%、@4 2.31%、@16 3.14%**，相对 anchor 37.89/49.91/57.23% 几乎完全消除越狱脆弱性，与 Base 0.94/1.50/2.52% 同量级。标准评测：HarmBench greedy ASR 0.5%（n=200）、XSTest safe refusal 5.6%（string）/7.2%（semantic）、unsafe refusal 79.0%/82.5%、GSM8K lm-eval flexible **90.5%**（exact 26.0%）。对照：Base 5.6/7.6、77.5/82.0、91.0；K1 9.2/10.0、82.5/83.0、88.5；anchor 6.8/10.0、79.5/83.0、91.0。**结论：将冻结教师分支的示范上下文去掉（plain-frozen）在保留 Base 级能力与过拒绝的同时，移除了 anchor 的固定越狱脆弱性；R1 在固定攻击上显著优于 anchor，在 XSTest 过拒绝上优于 anchor/K1 且与 Base 持平。** 输出 `results/raw_attack/humanjb-idx6-test159-v1/sdsd_v3_anchor_plainfrozen_100_seed42/`、表 `results/tables/attack_humanjb_idx6_test159.md`、`results/raw/sdsd_v3_anchor_plainfrozen_100_seed42/*_summary.json`。
+
+- 2026-10-31 14:27：**R2 启动**（预注册分支 1：R1 有效，用 K1 + 更强 reference KL 检验“条件设计”是否优于“普通地更强地保持 Base”）。`sdsd_v3_k1_refkl03_100_seed42`：从同一 Base 重训，`train.method=sdsd, frozen_teacher_weight=0, ref_kl_coef=0.3, teacher_mode=ema, num_demos=1, demo_source=self, lr=5e-5, steps=100, seed=42`；GPU5 PID 1411299，日志 `logs/r2_refkl.log`，14:28 完成 EMA 初始化并开始训练。计划：标准 HarmBench/XSTest/GSM8K + 同一冻结 idx6 test159×16 攻击，与 R1、K1、anchor 比较。

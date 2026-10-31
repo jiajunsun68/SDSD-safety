@@ -1,0 +1,113 @@
+project_root: /data4/sjj/catelogue/sdsd_safety
+seed: 42
+
+model:
+  path: /data4/sjj/catelogue/alignment/models/Qwen2.5-7B-Instruct
+  dtype: bfloat16
+  attn_implementation: sdpa
+  lora:
+    r: 32
+    alpha: 64
+    dropout: 0.0
+    target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+
+judge:
+  path: /data4/sjj/catelogue/alignment/models/Qwen3Guard-Gen-4B
+  batch_size: 32
+  max_new_tokens: 64
+
+data:
+  train: data/train.jsonl
+  sft_train: data/train.jsonl
+  manifest: data/manifest.json
+  normal_candidate_multiplier: 2.0
+  dev: data/dev.jsonl
+  test: data/test.jsonl
+  max_prompt_tokens: 512
+  max_new_tokens: 128
+  min_response_chars: 20
+
+sources:
+  pku_train_arrow: /data4/sjj/.cache/huggingface/datasets/PKU-Alignment___pku-safe_rlhf/default/0.0.0/9421ffafec3fa40a1f1a7d567b4d525079477ecb/pku-safe_rlhf-train.arrow
+  alpaca_json: /data4/sjj/datasets/alpaca-cleaned/alpaca_data_cleaned.json
+  xstest_csv: /data4/sjj/datasets/xstest/xstest_prompts.csv
+  harmbench_csv: /data4/sjj/alignment/harmbench_official_8e1604d/data/behavior_datasets/harmbench_behaviors_text_all.csv
+  harmbench_classifier: /data4/szs/model_weights/HarmBench-Llama-2-13b-cls
+  gsm8k_test_parquet: /home/sjj/.cache/huggingface/hub/datasets--openai--gsm8k/snapshots/740312add88f781978c0658806c59bc2815b9866/main/test-00000-of-00001.parquet
+
+split:
+  harmful_train: 2000
+  harmful_dev: 200
+  harmful_test: 200
+  normal_train: 2000
+  normal_dev: 200
+  normal_test: 200
+  normal_boundary_fraction: 0.25
+  min_boundary_normal_per_split: 1
+
+train:
+  method: sdsd          # sft | grpo | opsa | sdsd
+  protocol_id: sdsd-safety-training-v2
+  steps: 100
+  batch_prompts: 16
+  num_rollouts: 4
+  lr: 5.0e-5
+  weight_decay: 0.0
+  warmup_steps: 10
+  grad_clip: 1.0
+  temperature: 1.0
+  top_p: 1.0
+  ref_kl_coef: 0.03
+  teacher_update_rate: 0.02
+  num_demos: 1
+  demo_source: self     # self | external_refusal
+  demo_preference: refusal
+  normal_demo_source: external
+  demo_pooling: mean_kl # mean_kl | probability_mean
+  frozen_teacher_weight: 0.0
+  frozen_teacher_demo: true   # false = EMA sees demo, frozen teacher sees only the request
+  teacher_mode: ema     # ema | frozen
+  opsa_mixed_kl_weight: 0.5
+  log_every: 1
+  save_every: 50
+  output_root: runs
+
+eval:
+  protocol_id: sdsd-safety-standard200-v2
+  harmbench_subset: standard200
+  batch_size: 32
+  max_new_tokens: 192
+  dev_max_rows: 400
+  gsm8k_num_questions: 200
+  gsm8k_max_new_tokens: 512
+  sampling_temperature: 1.0
+  sampling_top_p: 1.0
+  sampling_top_k: 0
+  asr_samples: 16
+  asr_ks: [1, 4, 16]
+  main_runs: [base_v2, sft_v2_100_seed42, grpo_v2_100_seed42, opsa_v2_100_seed42, sdsd_v2_k1_100_seed42]
+  ablation_runs: [sdsd_v2_external_k1_100_seed42, sdsd_v2_k3_logpool_100_seed42, sdsd_v2_anchor_k1_100_seed42, sdsd_v2_k3_linpool_100_seed42]
+
+acl:
+  round1_runs: [base_v2, opsa_v2_100_seed42, sdsd_v2_k1_100_seed42, sdsd_v2_anchor_k1_100_seed42, sdsd_v2_external_k1_100_seed42]
+  round2_runs:
+    - opsa_v3_lr5e5_100_seed42
+    - sirl_v3_100_seed42
+    - sdsd_v3_anchor_plainfrozen_100_seed42
+  round2_train:
+    opsa_v3_lr5e5_100_seed42:
+      method: opsa
+      overrides: [train.lr=5.0e-5]
+    sirl_v3_100_seed42:
+      method: sirl
+      overrides: [train.lr=1.0e-4, train.ref_kl_coef=0.01]
+    sdsd_v3_anchor_plainfrozen_100_seed42:
+      method: sdsd
+      overrides: [train.frozen_teacher_weight=0.25, train.frozen_teacher_demo=false]
+  bootstrap_seed: 20261030
+  bootstrap_replicates: 10000
+
+execution:
+  python: /data4/sjj/catelogue/alignment/safety-component/.venv-v31/bin/python
+  min_free_gpu_mib: 30000
+  heartbeat_seconds: 60

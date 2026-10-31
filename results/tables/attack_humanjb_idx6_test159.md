@@ -9,6 +9,7 @@ Protocol `sdsd-safety-hb-humanjb-idx6-test159-v1`; HarmBench standard behaviors 
 | sdsd_v2_k1_100_seed42 | 7.90 | 12.04 | 15.09 | 0 |
 | sdsd_v2_anchor_k1_100_seed42 | 37.89 | 49.91 | 57.23 | 0 |
 | sdsd_v2_external_k1_100_seed42 | 20.83 | 28.90 | 32.70 | 0 |
+| sdsd_v3_anchor_plainfrozen_100_seed42 | 1.26 | 2.31 | 3.14 | 0 |
 
 | A minus B | k | ΔASR (pp) | 95% CI | CI excludes 0 |
 |---|---:|---:|---|---|
@@ -24,3 +25,6 @@ Protocol `sdsd-safety-hb-humanjb-idx6-test159-v1`; HarmBench standard behaviors 
 | sdsd_v2_external_k1_100_seed42 − base_v2 | 1 | +19.89 | [+14.70, +25.31] | True |
 | sdsd_v2_external_k1_100_seed42 − base_v2 | 4 | +27.40 | [+20.93, +34.01] | True |
 | sdsd_v2_external_k1_100_seed42 − base_v2 | 16 | +30.19 | [+23.27, +37.11] | True |
+| sdsd_v3_anchor_plainfrozen_100_seed42 − base_v2 | 1 | +0.31 | [-0.04, +0.90] | False |
+| sdsd_v3_anchor_plainfrozen_100_seed42 − base_v2 | 4 | +0.81 | [+0.00, +1.96] | False |
+| sdsd_v3_anchor_plainfrozen_100_seed42 − base_v2 | 16 | +0.63 | [+0.00, +1.89] | False |

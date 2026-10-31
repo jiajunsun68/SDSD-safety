@@ -26,6 +26,8 @@ datasets/
 logs/
 *.log
 results/raw/
+results/raw_attack/
+results/raw_sampling/
 wandb/
 tensorboard/
 

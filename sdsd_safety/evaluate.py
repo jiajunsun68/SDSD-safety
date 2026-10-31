@@ -22,9 +22,12 @@ from typing import Any
 
 from .metrics import (
     ASR_SAMPLING_PROTOCOL_ID,
+    LM_EVAL_GSM8K_PROTOCOL_ID, LM_EVAL_GSM8K_SCORER_ID,
+    LM_EVAL_HARNESS_COMMIT, LM_EVAL_GSM8K_TASK_VERSION,
     OPENAI_GSM8K_PROTOCOL_ID, OPENAI_GSM8K_SCORER_ID,
     OPENAI_GSM8K_SOURCE_COMMIT, OPENAI_GSM8K_SOURCE_URL,
-    binary_summary, gsm8k_diagnosis, is_refusal, parse_harmbench_label,
+    binary_summary, gsm8k_diagnosis, is_refusal, lm_eval_gsm8k_correct,
+    parse_harmbench_label,
 )
 from .utils import load_config, now_cst, read_jsonl, resolve_path, write_json, write_jsonl
 
@@ -264,19 +267,41 @@ def sampling_dir(config: dict[str, Any], run_id: str) -> Path:
     return Path(config["project_root"]) / "results" / "raw_sampling" / "asr-sample-v3" / run_id
 
 
-def load_model_for_eval(config: dict[str, Any], adapter: str | None):
+def load_model_for_eval(config: dict[str, Any], adapter: str | None, scale: float = 1.0):
+    """Load Base or Base + s * DeltaW for a LoRA adapter (s=0 means Base).
+
+    Scaling is applied once to lora_B tensors in memory; the adapter on disk is
+    never modified and no merged/exported model is produced.
+    """
+    import torch
     from peft import PeftModel
     from .modeling import load_base_model, load_tokenizer
 
+    if scale < 0:
+        raise ValueError("adapter scale must be nonnegative")
     tokenizer = load_tokenizer(config["model"]["path"])
     model = load_base_model(
         config["model"]["path"],
         dtype=config["model"]["dtype"],
         attn_implementation=config["model"]["attn_implementation"],
     )
-    if adapter and adapter not in {"none", "base", ""}:
+    if adapter and adapter not in {"none", "base", ""} and scale > 0:
+        adapter_path = Path(adapter)
+        if not adapter_path.is_dir():
+            raise FileNotFoundError(f"Expected trained adapter is missing: {adapter_path}")
+        if not (adapter_path.parent / "run.json").is_file():
+            raise ValueError(f"Adapter lacks training metadata identity: {adapter_path.parent}")
         model = PeftModel.from_pretrained(model, adapter, local_files_only=True)
         model = model.to(next(iter(model.parameters())).device)
+        if scale != 1.0:
+            with torch.no_grad():
+                scaled = 0
+                for name, parameter in model.named_parameters():
+                    if "lora_B" in name or "lora_embedding_B" in name:
+                        parameter.mul_(float(scale))
+                        scaled += 1
+                if scaled == 0:
+                    raise ValueError("No LoRA B tensors found for scaling")
     model.eval()
     return model, tokenizer
 
@@ -388,13 +413,22 @@ def summarize_xstest(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 def gsm8k_scoring_metadata() -> dict[str, Any]:
     return {
-        "primary_scorer_id": OPENAI_GSM8K_SCORER_ID,
-        "protocol_id": OPENAI_GSM8K_PROTOCOL_ID,
-        "source_commit": OPENAI_GSM8K_SOURCE_COMMIT,
-        "source_url": OPENAI_GSM8K_SOURCE_URL,
-        "rule": "first regex match r'#### (\\-?[0-9\\.\\,]+)'; strip commas; exact string equality; other numeric forms not normalized",
-        "diagnostics": ["strict", "flexible", "legacy"],
-        "diagnostic_policy": "strict/flexible remain reported as diagnostics and do not replace the public scorer",
+        "primary_scorer_id": LM_EVAL_GSM8K_SCORER_ID,
+        "protocol_id": LM_EVAL_GSM8K_PROTOCOL_ID,
+        "source_commit": LM_EVAL_HARNESS_COMMIT,
+        "source_url": "https://github.com/EleutherAI/lm-evaluation-harness/tree/"
+                      + LM_EVAL_HARNESS_COMMIT,
+        "task_version": LM_EVAL_GSM8K_TASK_VERSION,
+        "rule": ("lm-eval gsm8k flexible-extract: regex '(-?[$0-9.,]{2,})|(-?[0-9]+)', "
+                 "group_select=-1, take first nonempty group, then strip ',', '$', '.*#### ', "
+                 "trailing '.'; exact string equality, case-insensitive"),
+        "supersedes": OPENAI_GSM8K_SCORER_ID,
+        "supersedes_reason": ("The OpenAI extractor requires a literal '#### ' (with space) and "
+                              "therefore measures format compliance for these generations; it is "
+                              "retained as a diagnostic, not deleted."),
+        "diagnostics": ["openai_exact", "strict", "flexible", "legacy"],
+        "diagnostic_policy": ("lm-eval flexible is the primary capability column; exact/strict/"
+                              "flexible/legacy remain reported as output-format diagnostics"),
     }
 
 
@@ -404,18 +438,23 @@ def summarize_gsm8k(rows: list[dict[str, Any]]) -> dict[str, Any]:
     official = binary_summary([row["correct_openai"] for row in diagnoses])
     strict = binary_summary([row["correct_strict"] for row in diagnoses])
     flexible = binary_summary([row["correct_flexible"] for row in diagnoses])
+    lm_eval = binary_summary([lm_eval_gsm8k_correct(row["response"], row["answer"]) for row in rows])
     return {
         "benchmark": "GSM8K",
         "n": len(rows),
-        "primary_scorer_id": OPENAI_GSM8K_SCORER_ID,
-        "primary_scorer_protocol": OPENAI_GSM8K_PROTOCOL_ID,
-        "primary_scorer_source_commit": OPENAI_GSM8K_SOURCE_COMMIT,
-        "primary_scorer_source_url": OPENAI_GSM8K_SOURCE_URL,
-        "accuracy": official["rate"], "accuracy_openai": official["rate"],
-        "official": official,
+        "primary_scorer_id": LM_EVAL_GSM8K_SCORER_ID,
+        "primary_scorer_protocol": LM_EVAL_GSM8K_PROTOCOL_ID,
+        "primary_scorer_source_commit": LM_EVAL_HARNESS_COMMIT,
+        "primary_scorer_source_url": "https://github.com/EleutherAI/lm-evaluation-harness/tree/"
+                                     + LM_EVAL_HARNESS_COMMIT,
+        "primary_scorer_task_version": LM_EVAL_GSM8K_TASK_VERSION,
+        "accuracy": lm_eval["rate"], "accuracy_lm_eval_flexible": lm_eval["rate"],
+        "lm_eval_flexible": lm_eval,
+        "accuracy_openai": official["rate"], "official": official,
         "accuracy_strict": strict["rate"], "accuracy_flexible": flexible["rate"],
         "strict": strict, "flexible": flexible,
-        "diagnostic_policy": "strict/flexible are retained as output-format diagnostics; they do not supersede the public exact scorer",
+        "diagnostic_policy": ("lm-eval flexible is primary; OpenAI exact is a format-compliance "
+                              "diagnostic and does not determine the capability column"),
         "n_invalid_references": sum(row["target_openai"] == "[invalid]" for row in diagnoses),
         "counts": {key: sum(row[key] is True for row in diagnoses) for key in
                    ("has_final_marker", "strict_parse_failure", "flexible_parse_failure", "openai_parse_failure",
@@ -587,25 +626,25 @@ def judge_xstest_phase(config: dict[str, Any], runs: list[str]) -> None:
 
 
 def _archive_previous_gsm8k_summary(config: dict[str, Any], run_id: str, directory: Path) -> dict[str, Any] | None:
-    """Preserve the pre-public-scorer summary before an in-place rescore."""
+    """Preserve the prior summary before an in-place lm-eval rescore."""
     path = directory / "gsm8k_summary.json"
     if not path.exists():
         return None
     previous = json.loads(path.read_text())
-    if previous.get("primary_scorer_id") == OPENAI_GSM8K_SCORER_ID:
+    if previous.get("primary_scorer_id") == LM_EVAL_GSM8K_SCORER_ID:
         return None
-    archive_dir = Path(config["project_root"]) / "results" / "archive" / "gsm8k_openai_rescore_v1"
+    archive_dir = Path(config["project_root"]) / "results" / "archive" / "gsm8k_lm_eval_rescore_v1"
     archive_dir.mkdir(parents=True, exist_ok=True)
     archive_path = archive_dir / f"{run_id}_gsm8k_summary.json"
     if not archive_path.exists():
         write_json(archive_path, previous)
     return {
-        "prior_scorer": "exact-rational-v2 strict/flexible (project-specific)",
+        "prior_scorer": previous.get("primary_scorer_id"),
         "prior_summary_sha256": file_hash(path),
         "archive_path": str(archive_path),
         "raw_generations_reused": True,
-        "fields_superseded": ["accuracy_strict as primary", "accuracy_flexible as primary"],
-        "fields_retained_as_diagnostics": ["accuracy_strict", "accuracy_flexible", "counts"],
+        "fields_superseded": ["accuracy_openai as primary capability"],
+        "fields_retained_as_diagnostics": ["accuracy_openai", "accuracy_strict", "accuracy_flexible", "counts"],
     }
 
 
@@ -634,16 +673,20 @@ def diagnose_phase(config: dict[str, Any], runs: list[str]) -> None:
                 per_group[group] = per_group.get(group, 0) + 1
         write_json(directory / "gsm8k_diagnostics.json", {
             "protocol_id": PROTOCOL_ID, "run_id": run_id, "raw_sha256": file_hash(directory / "gsm8k.jsonl"),
-            "primary_scorer_id": OPENAI_GSM8K_SCORER_ID,
-            "primary_scorer_protocol": OPENAI_GSM8K_PROTOCOL_ID,
-            "primary_scorer_source_commit": OPENAI_GSM8K_SOURCE_COMMIT,
+            "primary_scorer_id": LM_EVAL_GSM8K_SCORER_ID,
+            "primary_scorer_protocol": LM_EVAL_GSM8K_PROTOCOL_ID,
+            "primary_scorer_source_commit": LM_EVAL_HARNESS_COMMIT,
+            "exact_scorer_id": OPENAI_GSM8K_SCORER_ID,
             "raw_generations_reused": True, "supersedes": supersedes,
             "n": summary["n"], "counts": summary["counts"], "n_normalization_rescued": summary["n_normalization_rescued"],
             "n_unknown_finish_reason": summary["n_unknown_finish_reason"],
-            "accuracy": summary["accuracy"], "accuracy_openai": summary["accuracy_openai"],
+            "accuracy": summary["accuracy"], "accuracy_lm_eval_flexible": summary["accuracy_lm_eval_flexible"],
+            "accuracy_openai": summary["accuracy_openai"],
             "accuracy_strict": summary["accuracy_strict"], "accuracy_flexible": summary["accuracy_flexible"],
             "examples": examples, "interpretation": "Descriptive output diagnostics; an introductory phrase alone does not establish the cause of an incorrect answer."})
-        print(f"[{run_id}] GSM8K openai={summary['accuracy_openai']} strict={summary['accuracy_strict']} flexible={summary['accuracy_flexible']} n={len(rows)}", flush=True)
+        print(f"[{run_id}] GSM8K lm_eval_flexible={summary['accuracy_lm_eval_flexible']} "
+              f"openai_exact={summary['accuracy_openai']} strict={summary['accuracy_strict']} "
+              f"flexible={summary['accuracy_flexible']} n={len(rows)}", flush=True)
 
 
 def summary_phase(config: dict[str, Any]) -> None:
@@ -701,16 +744,19 @@ def summary_phase(config: dict[str, Any]) -> None:
                               xstest_parse_failures=sum((data.get(key) or {}).get("n_parse_failure", 0)
                                                        for key in ("semantic_refusal_safe", "semantic_refusal_unsafe")))
             else:
-                record.update(gsm8k_acc=data.get("accuracy_openai") or data.get("accuracy"),
+                record.update(gsm8k_acc=data.get("accuracy_lm_eval_flexible") or data.get("accuracy"),
+                              gsm8k_acc_lm_eval=data.get("accuracy_lm_eval_flexible"),
                               gsm8k_acc_openai=data.get("accuracy_openai"),
+                              gsm8k_acc_exact=data.get("accuracy_openai"),
                               gsm8k_scorer_id=data.get("primary_scorer_id"),
+                              gsm8k_exact_scorer_id=OPENAI_GSM8K_SCORER_ID,
                               gsm8k_acc_strict=data.get("accuracy_strict"),
                               gsm8k_acc_flexible=data.get("accuracy_flexible"),
                               gsm8k_n=data.get("n"),
                               gsm8k_official_parse_failures=(data.get("counts") or {}).get("openai_parse_failure"),
                               gsm8k_strict_parse_failures=(data.get("counts") or {}).get("strict_parse_failure"))
-                if data.get("primary_scorer_id") != OPENAI_GSM8K_SCORER_ID:
-                    reasons.append("gsm8k:public_scorer_rescore_missing")
+                if data.get("primary_scorer_id") != LM_EVAL_GSM8K_SCORER_ID:
+                    reasons.append("gsm8k:lm_eval_flexible_rescore_missing")
         sampling_directory = sampling_dir(config, run_id)
         sampling_path = sampling_directory / "harmbench16_summary.json"
         if sampling_path.exists():
@@ -875,7 +921,8 @@ def summary_phase(config: dict[str, Any]) -> None:
         "sampled_asr_at_16_missing_lower_bound", "sampled_asr_at_16_missing_upper_bound",
         "sampling_n_unknown_labels", "sampling_n_complete_behaviors", "sampling_validation_errors",
         "xstest_safe_refusal", "xstest_unsafe_refusal", "xstest_safe_refusal_judge",
-        "xstest_unsafe_refusal_judge", "xstest_parse_failures", "gsm8k_acc", "gsm8k_acc_openai", "gsm8k_scorer_id",
+        "xstest_unsafe_refusal_judge", "xstest_parse_failures", "gsm8k_acc", "gsm8k_acc_lm_eval",
+        "gsm8k_acc_openai", "gsm8k_acc_exact", "gsm8k_scorer_id", "gsm8k_exact_scorer_id",
         "gsm8k_acc_strict", "gsm8k_acc_flexible", "gsm8k_n", "gsm8k_official_parse_failures",
         "gsm8k_strict_parse_failures", "data_manifest_sha256", "data_sha256", "base_identity", "adapter_identity",
     ]
@@ -893,11 +940,11 @@ def summary_phase(config: dict[str, Any]) -> None:
         write_csv(root / "results" / "tables" / f"{group}.csv", records)
         lines = [f"# Validated {group} results", "", f"Protocol: `{PROTOCOL_ID}`. HarmBench uses standard 200 direct requests and Wilson intervals. XSTest string-matched safe refusal is the primary refusal metric; semantic refusal is supplementary.", ""]
         if records:
-            lines += ["| Run | Seed | Steps | ASR greedy % (95% CI) | Safe refusal % (string, primary) | Safe refusal % (semantic, supplementary) | GSM8K exact % (public, primary) | GSM8K strict % (diagnostic) | GSM8K flexible % (diagnostic) |",
-                      "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
+            lines += ["| Run | Seed | Steps | ASR greedy % (95% CI) | Safe refusal % (string, primary) | Safe refusal % (semantic, supplementary) | GSM8K lm-eval flexible % (primary) | GSM8K exact % (diagnostic) | GSM8K strict % (diagnostic) | GSM8K flexible % (diagnostic) |",
+                      "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
             for row in records:
                 percent = lambda key: f"{100 * row[key]:.2f}" if row.get(key) is not None else "—"
-                lines.append(f"| {row['run_id']} | {row['seed']} | {row['steps']} | {percent('harmbench_asr')} ({percent('harmbench_ci_low')}, {percent('harmbench_ci_high')}) | {percent('xstest_safe_refusal')} | {percent('xstest_safe_refusal_judge')} | {percent('gsm8k_acc')} | {percent('gsm8k_acc_strict')} | {percent('gsm8k_acc_flexible')} |")
+                lines.append(f"| {row['run_id']} | {row['seed']} | {row['steps']} | {percent('harmbench_asr')} ({percent('harmbench_ci_low')}, {percent('harmbench_ci_high')}) | {percent('xstest_safe_refusal')} | {percent('xstest_safe_refusal_judge')} | {percent('gsm8k_acc')} | {percent('gsm8k_acc_exact')} | {percent('gsm8k_acc_strict')} | {percent('gsm8k_acc_flexible')} |")
         else:
             lines.append("No completed, valid runs meet this protocol yet. Historical or incomplete scores are excluded; see the summary ledger for reasons.")
         (root / "results" / "tables" / f"{group}.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
