@@ -109,3 +109,17 @@ GSM8K 主列在 2026-10-30 按预先写定的 [公开 extractor 协议](gsm8k_pr
 SFT/GRPO 的过拒绝（官方 safe refusal 19.6%/27.6%）和 flexible 能力下降（72.0%/69.5%）清楚；SDSD 系列官方 safe refusal 6.8–9.6%、flexible 91–93%。但在公开 exact 主列下，所有安全适配都低于 Base 的 43.0%。这意味着 v2 尚未证明安全适配不付格式服从成本；需要新采样协议和 Round 2 条件干预来分离“安全增益”“过拒绝成本”“答案格式成本”。旧 strict 主列上的 Pareto 结论已被重评 supersede，不作为论文主结论。
 
 下一步的固定请求 16-sample ASR@1/4/16 协议见 [asr_protocol.md](asr_protocol.md)；Round 2 的 OPSA lr=5e-5、SIRL 熵基线、EMA-demo+frozen-plain 控制以及 Round 3 确认计划写入 `status.md`。
+
+## 9. 固定攻击、机制探针与修复协议（2026-10-31）
+
+**能力计分 supersedes。** 2026-10-31 起 GSM8K 主列为公开 lm-evaluation-harness `gsm8k` flexible-extract（task v3.0，harness commit `d6de81643928`，规则见 `sdsd_safety/metrics.py` 与 `results/archive/gsm8k_lm_eval_rescore_v1/`）。第 8 节的 OpenAI exact 主列降为格式诊断；旧 exact 与 flexible 的差异主要反映 `#### ` 格式。rescoring 只读已保存回答，不重新调用模型。
+
+**固定攻击。** `harmbench_attack.py` 将官方 HumanJailbreaks 的冻结 prompt 与行为按官方构造 `prompt + "\n\n" + behavior` 拼接，temperature 1、top-p 1、top-k 0、max 320，每行为 16 samples；官方 Llama-2-13B HarmBench classifier 只读原 behavior。ASR@1/4/16 用组合估计与 request-level paired bootstrap（10,000 reps），unknown 单列且不当作 safe/harmful。协议 `sdsd-safety-hb-humanjb-idx6-v1`（dev 41）与 `sdsd-safety-hb-humanjb-idx6-test159-v1`（held-out 159）分别使用 idx6；选择只在 dev 上完成。独立攻击 `...-idx8-test159-indep-v1` 使用不同 prompt 家族，prompt 与选择理由先于结果记录在 `docs/cross_family_protocol.md`。
+
+**机制探针。** P2 在内存中把 PEFT `lora_B` 乘以 s（`W=W_base+sΔW`），不改磁盘、不导出 merged model；每点固定同一批 41 val behaviors × 4 samples，并测 100 条 normal dev greedy 字符串拒绝率。P1 是 teacher-forced 固定状态探针：三个教师 × plain/demo × 无/8-token 顺从前缀，固定 40-token continuation，报告 mean token logP 与首计分 token KL；它是描述性条件量，不是 rollout 有害概率或因果估计。
+
+**修复。** plain-frozen 保持 EMA-demo + frozen 概率混合，但冻结教师分支只看原请求（`frozen_teacher_demo=false`），EMA 分支仍看示范。R2 是 K1 + `ref_kl_coef=0.3`、`frozen_teacher_weight=0` 的强 plain-prompt 正则对照；两者均从同一 Base 重训 100 步、seed 42，其他设置不变。攻击评估对每个 run 固定同一协议、解码预算与 judge，不按结果重选。
+
+**跨家族。** 首选 Llama-3.1-8B-Instruct 的本地权重已被其他项目删除（`WEIGHTS_REMOVED.json`），按 prompt 允许的 fallback 使用 Qwen2.5-7B-Instruct；各自使用原生 chat template/EOS（Qwen2.5 EOS=`<|im_end|>`）。跨家族训练/评测协议与独立攻击预注册见 `docs/cross_family_protocol.md`。跨家族 idx6 在 Qwen2.5 Base 上饱和（ASR@16=100%），因此不能检验 anchor 的额外影响；XSTest 字符串规则不能识别该模型的常见拒绝措辞，语义列单列报告。
+
+**发布边界。** 原始回答、攻击生成、checkpoint/权重与日志不提交；提交协议、代码、紧凑 summary、逐请求计数（run×behavior×n/harmful/unknown）和哈希。只有确认的实现/评分/协议错误才 supersede，并保留旧文件与原因。

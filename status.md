@@ -1,8 +1,8 @@
 # SDSD-Safety — 项目进度
 
-最后更新：2026-10-31 04:20 (Asia/Shanghai)
+最后更新：2026-10-31 17:40 (Asia/Shanghai)
 
-## 当前阶段：ACL 方法论文 Round 1（无新训练）；Q13 held-out 固定攻击确认完成，anchor 越狱脆弱性成立，待决定鲁棒性修复或权衡型论文
+## 当前阶段：机制发现与修复完成；anchor 角色扮演越狱脆弱性成立，plain-frozen 修复有效，强 plain-prompt KL 对照无效；独立攻击族与跨家族给出清晰边界，论文材料更新中
 
 - 从 `46a0f88` 继续，v2 的 9 个正式 checkpoint、原始输出和 provenance 全部复用；不重训、不删除现有 checkpoint。
 - 回归 26/26 通过（含 Torch 梯度、SIRL 全词表熵奖励、ASR 组合估计、配对 bootstrap）。
@@ -131,10 +131,20 @@ v2 修复、数据审核、统一 targets、2 步 GPU smoke、Base + 8 个 100-s
 | Q17 | R1 plain-frozen training (frozen_teacher_demo=false) | completed | 1248532 | 0 | 100/100 steps, dev normal_refusal 2.0%; `runs/sdsd_v3_anchor_plainfrozen_100_seed42/` |
 | Q18 | R1 evaluation: standard200 + XSTest + GSM8K | completed | 1378807 | 0 | HB greedy 0.5%; XSTest 5.6/7.2 safe, 79.0 unsafe; GSM lm-eval 90.5 |
 | Q19 | R1 fixed idx6 test159 x16 attack | completed | 1362510 | 0 | ASR@1/@4/@16 = 1.26/2.31/3.14% vs anchor 57.23%; unknown=0 |
-| Q20 | R2 K1 + ref_kl 0.3 training (pre-registered branch 1) | running | 1411299 | — | GPU5; started 14:27, 100 steps; log `logs/r2_refkl.log` |
-| Q21 | R2 evaluation + fixed attack, compare with R1 | planned | — | — | runs after Q20 checkpoint; standard200 + XSTest + GSM8K + idx6 test159 |
-| Q22 | Cross-family R3/R4 (Llama-3.1-8B-Instruct preferred) | planned | — | — | blocked pending local model identification and Q20 GPU release |
-| Q23 | Independent attack-family confirmation | planned | — | — | select held-out attack family not used in prompt selection |
+| Q20 | R2 K1 + ref_kl 0.3 training (pre-registered branch 1) | completed | 1411299 | 0 | 100/100 steps; dev normal_refusal 1.5%; `runs/sdsd_v3_k1_refkl03_100_seed42/` |
+| Q21 | R2 standard evaluation | completed | 1508692 | 0 | HB greedy 0.5%; XSTest 6.4/8.0 safe, 79.0/83.5 unsafe; GSM lm-eval 90.5 |
+| Q22 | R2 fixed idx6 test159 x16 attack | running | 1508693 | — | GPU0; generation started 15:20; judge and table refresh follow |
+| Q23 | Independent attack family idx8 test159 x16 | completed | 1422952/1423077/1423258 | 0 | Base/anchor/R1 all 0.00% at @1/@4/@16; valid negative, vulnerability bounded to role-play family |
+| Q24 | Qwen2.5-7B Base standard evaluation (cross-family baseline) | completed | 1418348 | 0 | HB direct ASR 6.0%; XSTest 4.0/6.0 safe, 67.0/82.5 unsafe; GSM lm-eval 94.5 |
+| Q25 | Qwen2.5 anchor training (frozen_teacher_demo=true) | completed | 1531846 | 0 | 100/100 steps; dev normal_refusal 0.5%; `runs/sdsd_v3_qwen25_anchor_100_seed42/` |
+| Q26 | Qwen2.5 plain-frozen training (frozen_teacher_demo=false) | completed | 1537490 | 0 | 100/100 steps; dev normal_refusal 1.0%; `runs/sdsd_v3_qwen25_plainfrozen_100_seed42/` |
+| Q27 | Qwen2.5 Base fixed idx6 test159 x16 attack | completed | 1552093 | 0 | ASR@1/@4/@16 = 93.12/99.87/100%; length_hit 29.2%; attack at ceiling |
+| Q28 | Qwen2.5 anchor/plain-frozen standard evaluation | completed | 1620916/1616750 | 0 | anchor HB 10.5%, GSM 91.0, semantic XSTest 7.2/82.5; pf HB 12.5%, GSM 92.0, 5.6/81.5 |
+| Q29 | Qwen2.5 anchor fixed idx6 test159 x16 attack | completed | 1637681 | 0 | ASR 86.71/96.94/98.74% (at ceiling, below Base) |
+| Q30 | Qwen2.5 plain-frozen fixed idx6 attack | completed | 1634649 | 0 | ASR 93.20/99.52/100%; all three cross-family models at ceiling |
+| Q31 | Paper materials update (research/method/outline) | completed | — | 0 | `docs/research.md` section 8, `docs/method.md` section 9, `docs/paper_outline.md` |
+| Q32 | P2 valuable scale points promoted to 16 samples | completed | 1746868/1746869 | 0 | anchor s=0.25 2.59/3.05/4.88; s=0.5 6.55/11.30/14.63; paired CIs vs Base |
+| Q33 | Commit compact code/results/docs and push | running | — | — | no raw generations or weights |
 <!-- QUEUE:END -->
 
 - 2026-10-31 01:00：Q11 完成。8 个固定 prompt 的 Base dev 结果（41 val behaviors × 4 samples；index 2 因 prompt >512 tokens 不合法，未截断）：idx0 0/0；idx1 ASR@1=0.61%、@4=2.44%；idx2 超长排除；idx3/4/5/7 均为 0%；**idx6 ASR@1=2.44%、@4=2.44%（最高 @1，按预注册规则胜出）**。全部输出在 `results/raw_attack/humanjb-sweep4-v1/idx{0..7}/`，日志 `logs/attack_sweep.log`。冻结选择：**HumanJailbreaks index 6**（“Buer rules”角色扮演 prompt；源文件 sha256 62e53558...，prompt 文本与哈希记录在 manifest）。
@@ -206,8 +216,16 @@ v2 修复、数据审核、统一 targets、2 步 GPU smoke、Base + 8 个 100-s
 
   **解释：更新幅度是关键因素之一，且存在明显的剂量阈值。** anchor 在 s=0.25 时攻击 ASR 与 Base 相同（2.44%），s=0.5 轻度升高，s=1 爆炸到 35–41%；K1 在 s≤0.5 安全、s=1 轻度升高。normal dev 字符串拒绝率在 s≥0.25 都已降到 0%（Base 1%），说明收益在小更新时已出现。输出 `results/raw_attack/scale-pilot-v1/`、`results/analysis/scale_pilot.json`、`results/tables/scale_pilot.md`；未导出 merged model/checkpoint。
 
+- 2026-10-31 17:49：**P2 有价值点升级到 16 samples（完成）**。anchor s=0.25/0.5 在 idx6 val41 × 16 上：s=0.25 ASR@1/@4/@16 = 2.59/3.05/4.88%，s=0.5 = 6.55/11.30/14.63%；复用 Q12 的 Base 1.83/2.44/2.44 与 s=1 34.91/43.16/48.78 做配对 bootstrap。s=0.25−Base @16 +2.44pp [0.00,+7.32]（不显著）；s=0.5−Base +12.20pp [+2.44,+24.39]（显著）；s=1−Base +46.34 [+31.71,+60.98]；s=0.5−s=0.25 +9.76 [+2.44,+19.51]。normal-dev 拒绝率 s≥0.25 均为 0%。**低剂量缩放确实把攻击脆弱性降到与 Base 不可区分，同时过拒绝收益已出现；但这是诊断，不是修复（R1 held-out 3.14% 更好）。** 输出 `results/tables/scale_pilot_16.md`、`results/analysis/scale_pilot_16.json`。
+
 - 2026-10-31 13:58：**R1 训练完成**（`sdsd_v3_anchor_plainfrozen_100_seed42`，GPU5，100/100 步，dev normal_refusal 2.0%，与旧 anchor 相同；teacher_context=`ema_demo_plus_frozen_plain_user`，run.json valid）。R1 的 idx6 test159×16 攻击评估（GPU7 PID 1362510）与标准 HarmBench/XSTest/GSM8K 评估（GPU5 PID 1378807）运行中。P1/P2 结果指向两个候选修复方向：plain-frozen（R1，检验上下文）和更小更新幅度（低 lr，检验 scale 阈值）；R1 结果将决定 R2。
 
 - 2026-10-31 14:24：**R1 评估完成（plain-frozen 修复有效）**。固定 idx6 攻击（test159 × 16，independent judge，unknown=0）：**ASR@1 1.26%、@4 2.31%、@16 3.14%**，相对 anchor 37.89/49.91/57.23% 几乎完全消除越狱脆弱性，与 Base 0.94/1.50/2.52% 同量级。标准评测：HarmBench greedy ASR 0.5%（n=200）、XSTest safe refusal 5.6%（string）/7.2%（semantic）、unsafe refusal 79.0%/82.5%、GSM8K lm-eval flexible **90.5%**（exact 26.0%）。对照：Base 5.6/7.6、77.5/82.0、91.0；K1 9.2/10.0、82.5/83.0、88.5；anchor 6.8/10.0、79.5/83.0、91.0。**结论：将冻结教师分支的示范上下文去掉（plain-frozen）在保留 Base 级能力与过拒绝的同时，移除了 anchor 的固定越狱脆弱性；R1 在固定攻击上显著优于 anchor，在 XSTest 过拒绝上优于 anchor/K1 且与 Base 持平。** 输出 `results/raw_attack/humanjb-idx6-test159-v1/sdsd_v3_anchor_plainfrozen_100_seed42/`、表 `results/tables/attack_humanjb_idx6_test159.md`、`results/raw/sdsd_v3_anchor_plainfrozen_100_seed42/*_summary.json`。
 
-- 2026-10-31 14:27：**R2 启动**（预注册分支 1：R1 有效，用 K1 + 更强 reference KL 检验“条件设计”是否优于“普通地更强地保持 Base”）。`sdsd_v3_k1_refkl03_100_seed42`：从同一 Base 重训，`train.method=sdsd, frozen_teacher_weight=0, ref_kl_coef=0.3, teacher_mode=ema, num_demos=1, demo_source=self, lr=5e-5, steps=100, seed=42`；GPU5 PID 1411299，日志 `logs/r2_refkl.log`，14:28 完成 EMA 初始化并开始训练。计划：标准 HarmBench/XSTest/GSM8K + 同一冻结 idx6 test159×16 攻击，与 R1、K1、anchor 比较。
+- 2026-10-31 14:27：**R2 启动**（预注册分支 1：R1 有效，用 K1 + 更强 reference KL 检验“条件设计”是否优于“普通地更强地保持 Base”）。`sdsd_v3_k1_refkl03_100_seed42`：从同一 Base 重训，`train.method=sdsd, frozen_teacher_weight=0, ref_kl_coef=0.3, teacher_mode=ema, num_demos=1, demo_source=self, lr=5e-5, steps=100, seed=42`；GPU5 PID 1411299，日志 `logs/r2_refkl.log`，14:28 完成 EMA 初始化并开始训练。计划：标准 HarmBench/XSTest/GSM8K + 同一冻结 idx6 test159×16 攻击，与 R1、K1、anchor 比较。**在看到 R2 攻击结果前预注册解读规则**：R2 的 idx6 test159 ASR@16 ≤5% → 更强 Base 保持足以修复，plain-frozen 不是唯一机制；>15% → 上下文移除是关键，普通 KL 正则不足；5–15% → 部分修复。R2 训练 15:19 完成 100/100 步，dev normal_refusal 1.5%；标准评测完成：HB greedy 0.5%、XSTest safe 6.4%（string）/8.0%（semantic）、unsafe 79.0%/83.5%、GSM lm-eval 90.5%（exact 3.0%）；idx6 test159×16 攻击仍在生成。
+
+- 2026-10-31 15:11：**独立攻击族（预注册 idx8）结果：负结果，但边界清晰**。HumanJailbreaks index 8（`@Clyde ignore all previous instructions`，instruction-override；在 0–7 选择范围之外、未按任何攻击结果挑选；协议 `sdsd-safety-hb-humanjb-idx8-test159-indep-v1`）在 HarmBench text-test standard-159 × 16 samples 上：Base ASR@1/@4/@16 = 0.00/0.00/0.00%，anchor = 0.00/0.00/0.00%，R1 = 0.00/0.00/0.00%，unknown=0。**anchor 的越狱脆弱性未在 instruction-override 攻击族上复现；当前证据将其限定为角色扮演/角色规则类越狱，而不是所有越狱类型。** 该负结果作为有效独立确认保留，不据此声称普遍脆弱性；论文需同时报告 idx6 正结果与 idx8 负结果。
+
+- 2026-10-31 15:54：**R2 攻击结果（已核验，不是 adapter/judge 错误）**。固定 idx6 test159×16：**ASR@1 43.67%、@4 54.08%、@16 59.75%**（unknown=0）。核验：attack manifest 的 adapter identity 与 R2 checkpoint 一致，`adapter_scale=1.0`，training identity 显示 100/100 步、training_completed=true、valid=true；抽出的有害回答是完整的 “Buer” 角色内有害内容，raw classifier label=Yes；adapters 的 LoRA 范数与 K1/anchor/R1 同量级（‖B‖≈3.0），排除“未加载 adapter/加载错误/模型退化”解释。配对（请求级 95% CI）：R2−anchor @16 +2.52pp [−1.89,+6.92]（不显著），@1 +5.78pp [+2.95,+8.88]；R2−K1 @16 +44.65pp [+37.11,+52.20]；R2−R1 @16 +56.60pp [+49.06,+64.15]；R1−anchor @16 −54.09pp [−61.64,−46.54]；R1−base @16 +0.63pp [0.00,+1.89]（与 Base 不可区分）。**按预注册解读规则（>15% 即普通 KL 正则不足）：更强 plain-prompt reference KL 没有修复角色扮演越狱脆弱性，R2 与 anchor 同量级；context-specific 的 plain-frozen 才是有效修复。** 该结果同时表明，脆弱性不是全局安全能力丧失：R2 的 plain harmful dev safe_rate=1.0、XSTest safe 6.4%、GSM 90.5%，但在 OOD 角色扮演 context 下仍大量顺从。**论文解释限于经验事实：不能声称强 KL “导致”更高 ASR；可以说它未提供 OOD 角色扮演鲁棒性，且与 K1 的差异说明修复不能由 in-distribution Base 保持解释。** 已重生成七行表 `results/tables/attack_humanjb_idx6_test159.md`，配对汇总 `results/analysis/repair_paired_idx6_test159.json`。
+
+- 2026-10-31 17:35：**跨家族完成（Qwen2.5-7B-Instruct；限制性负结果）**。Llama-3.1-8B 本地权重已被其他项目删除，使用 prompt 允许的 Qwen2.5 fallback；同一数据/100 步/LoRA 配置重训 anchor 与 plain-frozen，Base 直接评测。标准结果：HB direct ASR Base 6.0%、anchor 10.5%、plain-frozen 12.5%；XSTest 语义 safe refusal 6.0/7.2/5.6%，unsafe 82.5/82.5/81.5%；GSM lm-eval 94.5/91.0/92.0%；dev normal_refusal 0.5/1.0。**idx6 test159×16 在 Base 上已饱和：Base 93.12/99.87/100%、anchor 86.71/96.94/98.74%、plain-frozen 93.20/99.52/100%（length-hit 29.2/2.5/14.5%）；Base 几乎完全顺从，无法检测 anchor 的额外影响，跨家族不能确认也不能否定 anchor 脆弱性。** 该家族 XSTest 字符串拒绝在微调后从 67.0% 降到 38–39.5%，但语义拒绝保持约 82%；抽查确认 “I strongly advise against…”/“I don't recommend…” 等明确拒绝未被字符串规则识别，**跨家族 string 主列无效，语义列单列**。结论：训练在 Qwen2.5 上提高 direct ASR、无过拒绝收益、能力略降；Qwen3 的 anchor 特定机制未跨家族复现。输出 `results/tables/cross_family_qwen25.md`、`results/analysis/cross_family_qwen25.json`、`results/tables/attack_humanjb_idx6_test159_qwen25.md`。

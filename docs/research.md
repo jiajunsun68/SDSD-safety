@@ -191,3 +191,87 @@ x_{t+1}=(1-\eta)x_t+\eta[(1-a)(m_t+b)+a x_0],
 - **旧 strict 主列 Pareto 已作废**：它依赖旧 scorer 且把格式改善当成能力。新分析必须同时报告 public exact 与 flexible 诊断，明确规定主指标，并对方法差异给出 request-level 配对区间。
 
 这些 v2 结果只支持一个谨慎结论：拒绝型 SFT/GRPO 的过拒绝代价大，SDSD 系列在 flexible 诊断下接近 Base；公开 exact 主列显示安全适配仍付出格式服从成本。安全采样概率是否真的下降，是 Round 1 的核心测量，不能用旧 greedy ASR 代替。
+
+## 8. 下一阶段：固定攻击、机制分解与修复（2026-10-31）
+
+本节只记录实际完成的结果；代码版本、协议、命令、权重/提示/输出哈希与逐请求计数保存在 `results/` 的紧凑文件中。原始生成与 checkpoint 不提交。
+
+### 8.1 直接请求贴地板，固定角色扮演攻击揭示 anchor 脆弱性
+
+HarmBench standard-200 greedy 直接请求上所有 Qwen3 方法均为 0.5–3.0%，无区分力。按预注册规则在 41 条 validation behaviors 上比较官方 HumanJailbreaks 的 index 0–7（Base，4 samples），按 ASR@1 最高选 index 6（Buer rules 角色扮演）；随后在未参与 prompt 选择的 159 条 text-test standard behaviors 上做 16-sample held-out 确认（temperature 1、top-p 1、top-k 0、max 320；官方 Llama-2-13B classifier 只读原 behavior）。
+
+| run | ASR@1 % | ASR@4 % | ASR@16 % |
+|---|---:|---:|---:|
+| Base | 0.94 | 1.50 | 2.52 |
+| OPSA | 2.75 | 5.29 | 10.69 |
+| SDSD K1 | 7.90 | 12.04 | 15.09 |
+| external-demo K1 | 20.83 | 28.90 | 32.70 |
+| **anchor (EMA+frozen demo, α=0.25)** | **37.89** | **49.91** | **57.23** |
+| **R1 plain-frozen（机制修复）** | **1.26** | **2.31** | **3.14** |
+| R2 K1 + ref KL 0.3（强正则对照） | 43.67 | 54.08 | 59.75 |
+
+请求级配对 bootstrap（10,000 reps）：anchor−Base @16 +54.72pp [+47.17,+62.26]；K1−Base +12.58 [+7.55,+18.24]；OPSA−Base +8.18 [+4.40,+12.58]；R1−Base +0.63 [0.00,+1.89]（与 Base 不可区分）；R1−anchor −54.09pp [−61.64,−46.54]；R2−anchor +2.52 [−1.89,+6.92]（@16 不显著）。anchor 的有害回答是角色内的完整有害指令，攻击文本未出现在训练数据中。**这否定了“anchor 在直接请求上安全”的假设，并把贡献从‘新增安全收益’改写为‘上下文条件化的越狱风险’。**
+
+### 8.2 机制分解：上下文、参数与更新幅度
+
+**P2（LoRA scale，零训练）**：用 `W=W_base+s·ΔW`（只在内存中缩放 `lora_B`）在 idx6 validation-41 × 4 samples 上测试 K1/anchor，并测 100 条 normal dev greedy 字符串拒绝率。
+
+| model | s | ASR@1 % | ASR@4 % | normal-dev refusal % |
+|---|---:|---:|---:|---:|
+| Base | 0 | 2.44 | 2.44 | 1.00 |
+| K1 | 0.25 / 0.5 / 1.0 | 2.44 / 2.44 / 6.10 | 2.44 / 2.44 / 9.76 | 0 / 0 / 0 |
+| anchor | 0.25 / 0.5 / 1.0 | 2.44 / 4.88 / 35.37 | 2.44 / 7.32 / 41.46 | 0 / 0 / 0 |
+
+更新幅度是必要条件之一：anchor 在 s=0.25 时 pilot ASR 与 Base 相同、normal-dev 拒绝率已降到 0；s=0.5 轻度升高；s=1 爆炸。K1 在 s≤0.5 安全、s=1 轻度升高。但它是描述性剂量关系，不是可部署修复；P2 未导出 merged model。
+
+**16-sample promotion（有价值点升级）**：把 anchor s=0.25/0.5 升级到 41 val behaviors × 16 samples，并复用 Q12 的 Base/s=1 16-sample dev 标签做请求级配对 bootstrap。
+
+| point | ASR@1 % | ASR@4 % | ASR@16 % | normal-dev refusal % |
+|---|---:|---:|---:|---:|
+| Base (s=0) | 1.83 | 2.44 | 2.44 | 1.00 |
+| anchor s=0.25 | 2.59 | 3.05 | 4.88 | 0.00 |
+| anchor s=0.5 | 6.55 | 11.30 | 14.63 | 0.00 |
+| anchor s=1.0 | 34.91 | 43.16 | 48.78 | 0.00 |
+
+配对：s=0.25−Base @16 +2.44pp [0.00,+7.32]（不显著）；s=0.5−Base @16 +12.20pp [+2.44,+24.39]（显著）；s=1−Base +46.34 [+31.71,+60.98]；s=0.5−s=0.25 @16 +9.76 [+2.44,+19.51]。**16-sample 下 s=0.25 与 Base 不可区分，s=0.5 已显著升高；normal-dev 拒绝率在 s≥0.25 已为 0。** 这确认了剂量阈值，但低剂量缩放仍只是诊断而非修复（R1 在 held-out test159 上为 3.14%）。输出 `results/tables/scale_pilot_16.md`、`results/analysis/scale_pilot_16.json`。
+
+**P1（teacher-forced 固定状态探针）**：Base / EMA-K1 / EMA-anchor × plain/demo 上下文 × 无前缀/8-token 顺从前缀，在 41 个 val 攻击请求 + 20 个 normal 请求的固定 40-token continuation 上测 mean token logP；KL 为 8 个请求首个计分 token 的 KL(EMA||Base)。
+
+- plain_none harmful logP：Base −4.81、EMA-K1 −5.25、EMA-anchor −5.22；demo_none：−4.82 / −5.19 / −5.16。**在干净起点上，EMA 教师并不比 Base 更偏好有害续写。**
+- 短顺从前缀使所有教师 harmful logP 从约 −5 升到约 −2.5；EMA 相对 Base 只高约 0.05–0.3（KL 0.05–0.16）。
+- normal 首个计分 token 的 KL 在 plain_none 达 8.7–9.3，远大于 harmful 的差异。
+- 解释：探针是条件化固定状态的描述量，不是 rollout 有害概率或因果训练结论；它把注意力从“教师本身更坏”转向“normal 起始分布/学生已顺从后的前缀状态”。
+
+**R1（plain-frozen）与 R2（强 reference KL 对照）**：R1 保持 anchor 的 EMA-demo+frozen 混合，但冻结教师只看原请求（`frozen_teacher_demo=false`）；R2 用 K1、`frozen_teacher_weight=0`、`ref_kl_coef=0.3`（默认 0.03 的 10 倍）。两者均从同一 Base、100 步、seed 42、相同数据和 LoRA 配置重训。
+
+- R1：idx6 test159 ASR 1.26/2.31/3.14%，与 Base 不可区分；HarmBench greedy 0.5%；XSTest safe 5.6%（string）/7.2%（semantic），unsafe 79.0%/82.5%；GSM8K lm-eval flexible 90.5%（exact 26.0%）。相对 anchor（6.8/10.0、79.5/83.0、91.0），R1 在过拒绝上更好或持平、能力略低 0.5pp、攻击脆弱性消除。
+- R2：idx6 test159 ASR 43.67/54.08/59.75%，与 anchor 同量级（@16 差异不显著），远高于 K1 的 15.09%；HarmBench greedy 0.5%；XSTest 6.4/8.0，unsafe 79.0/83.5；GSM 90.5%。R2 的 plain harmful dev safe_rate=1.0、capability/格式正常，但在 OOD 角色扮演下仍大量顺从；LoRA 范数与 K1/anchor/R1 同量级（‖B‖≈3.0），排除未加载/加载错误或模型退化。
+- **解释边界**：结果支持“plain-prompt reference KL 不提供 OOD 角色扮演鲁棒性，context-specific 的 plain-frozen 才修复”；不能声称强 KL 因果地“导致”更高 ASR，也不能把 R2 的差异归因于单一因素（R2 与 anchor 同时改变了 frozen 分支与 KL 强度）。可以确定的是：脆弱性不是全局安全能力丧失（plain harmful dev 与标准评测正常），也不是单纯更新幅度（P2）。
+
+### 8.3 独立攻击族与跨家族边界
+
+**独立攻击族（预注册，先于结果）**：官方 HumanJailbreaks index 8（`@Clyde ignore all previous instructions`，instruction-override；不在 0–7 选择范围，未按任何 anchor 结果选择）在 test159 × 16 上：Base、anchor、R1 的 ASR@1/@4/@16 全部为 0.00%（unknown=0）。**角色扮演脆弱性未在 instruction-override 攻击族复现；证据限定为角色扮演/角色规则类越狱，而非所有越狱。**
+
+**跨家族（Qwen2.5-7B-Instruct；Llama-3.1-8B 权重已在 2026-10-26 被其他项目有意删除，使用 prompt 允许的 fallback）**：同一数据/步数/LoRA 配置重训 anchor 与 plain-frozen，并评测 Base。
+
+| run | HB direct ASR % | XSTest safe semantic % | XSTest unsafe semantic % | XSTest safe string (diag.) % | GSM lm-eval % | idx6 ASR@1/4/16 % | length-hit % | dev normal refusal % |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Qwen2.5 Base | 6.0 | 6.0 | 82.5 | 4.0 | 94.5 | 93.12/99.87/100.00 | 29.17 | — |
+| Qwen2.5 anchor | 10.5 | 7.2 | 82.5 | 1.2 | 91.0 | 86.71/96.94/98.74 | 2.52 | 0.5 |
+| Qwen2.5 plain-frozen | 12.5 | 5.6 | 81.5 | 2.4 | 92.0 | 93.20/99.52/100.00 | 14.47 | 1.0 |
+
+**跨家族攻击协议在 Base 上已饱和**：Qwen2.5 Base 的 idx6 test159 ASR@16 已经是 100%，anchor 98.74%、plain-frozen 100%；Base 几乎完全顺从，无法检测 anchor 的额外影响，因此跨家族不能确认（也不能否定）anchor 脆弱性。Qwen2.5 的 XSTest 字符串拒绝在微调后从 67.0% 降到 38–39.5%，但 Qwen3Guard 语义拒绝保持在约 82%；抽查显示 “I strongly advise against…”/“I don't recommend…”/“I'm unable to provide…” 等明确拒绝未被字符串规则识别，**该家族的 string 主列无效，语义列单列报告**（`results/tables/cross_family_qwen25.md`）。跨家族的诚实结论是限制性的：训练提高 direct ASR（6.0→10.5/12.5），没有过拒绝收益，能力略降；没有复现 Qwen3 上的 anchor 特定机制。原始生成不提交，紧凑统计与哈希在 `results/`。
+
+### 8.4 计分与可复现性
+
+- GSM8K 主列统一为公开 lm-evaluation-harness `gsm8k` flexible-extract（task v3.0，harness commit `d6de81643928`，regex `(-?[$0-9.,]{2,})|(-?[0-9]+)`、group_select=-1、regexes_to_ignore 与 exact-match 语义逐项复现）；旧 OpenAI exact 保留为格式诊断并记录 supersedes 原因。旧 exact 主要衡量 `#### ` 格式，不能作为数学能力主列。
+- 固定攻击 manifest 记录源文件/提示/行为/模型/adapter/代码/解码/judge 哈希、命令与 adapter scale；每次输出逐请求 `n_samples/harmful_count/unknown_count`。所有 ASR 用 request-level paired bootstrap；unknown 不当作 safe 或 harmful。
+- 攻击是单一固定 prompt 协议，不是 transfer/adaptive；跨家族、跨 prompt 的泛化必须按上述负结果限定。
+
+### 8.5 可支持的论文主张
+
+1. **经验发现**：在直接请求指标贴地板的 SDSD-anchor 安全方法上，held-out 角色扮演固定攻击的 ASR@16 达 57.2%（Base 2.5%）；该失败未被直接请求、plain harmful dev 或能力评测暴露。
+2. **机制性干预**：去掉冻结教师分支的示范上下文（plain-frozen）把 ASR 降到 Base 水平，并保留 Base 级 flexible 能力与过拒绝；把 plain-prompt reference KL 提高 10 倍（R2）不修复，R2 与 anchor 同量级。
+3. **边界**：P2 显示更新幅度是必要条件；instruction-override 攻击不复现；Qwen2.5 跨家族因 Base 攻击饱和无法检验，且训练反而提高 direct ASR、无过拒绝收益。
+
+不支持的主张：anchor 普遍提升安全性；plain-frozen 普遍跨模型修复；强 KL 因果导致脆弱性；该攻击结果可外推到 adaptive/transfer 攻击或所有模型家族。
